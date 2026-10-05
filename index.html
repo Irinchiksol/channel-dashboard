@@ -118,12 +118,27 @@ const SECTIONS = [
   { id: "savings", name: "Накопления", mau: 980000, dau: 145000, financialClients: 210000, noun: "операции", trend: [0.9, 0.92, 0.94, 0.96, 0.98, 1] },
   { id: "credits", name: "Кредиты", mau: 640000, dau: 72000, financialClients: 95000, noun: "операции", trend: [0.88, 0.9, 0.93, 0.95, 0.98, 1] }
 ];
-const LEVELS = [["channel", "Канал"], ["segment", "Сегмент"], ["journey", "Разделы и сценарии"]];
+const LEVELS = [["channel", "Канал"], ["segment", "Сегмент"], ["journey", "Разделы и сценарии"], ["txnact", "Транзакционная активность"]];
+const TXN_CUTS = [["segment", "Сегмент"], ["function", "Функция"], ["product", "Продукт"], ["type", "Тип операции"], ["channel", "Канал"], ["device", "Устройство"], ["period", "Период"], ["tenure", "Новый или существующий"], ["breadth", "Один или несколько продуктов"], ["behavior", "Поведенческие группы"]];
+const TXN_EXTRA = {
+  youth: { median: 980, days: 6.2, regular: 0.58, single: 0.06, success: 0.93, cancel: 0.05 },
+  career: { median: 1500, days: 5.4, regular: 0.52, single: 0.08, success: 0.945, cancel: 0.04 },
+  working: { median: 1600, days: 4.6, regular: 0.47, single: 0.1, success: 0.948, cancel: 0.038 },
+  mature: { median: 2100, days: 3.8, regular: 0.44, single: 0.12, success: 0.955, cancel: 0.032 },
+  senior: { median: 1700, days: 2.9, regular: 0.36, single: 0.16, success: 0.94, cancel: 0.042 },
+  pension: { median: 1400, days: 2.2, regular: 0.31, single: 0.22, success: 0.96, cancel: 0.028 },
+  privilege: { median: 4200, days: 5.1, regular: 0.55, single: 0.04, success: 0.96, cancel: 0.025 },
+  prime: { median: 8600, days: 6.4, regular: 0.64, single: 0.03, success: 0.97, cancel: 0.02 },
+  salary: { median: 1650, days: 4.8, regular: 0.5, single: 0.09, success: 0.95, cancel: 0.035 }
+};
+const NEW_CLIENTS = 192000;
+const SLEEPING = 2240000;
+const HIGH_CLIENTS = 480000;
 const STEP_NAMES = ["Показ точки входа", "Переход в раздел", "Просмотр экрана", "Старт сценария", "Заполнение данных", "Подтверждение", "Успешное завершение", "Повторное использование"];
 const SPEED = { phone: 46, qr: 18, own: 24, cashback: 35, partner: 40, "open-deposit": 210, "card-service": 75, "loan-app": 420 };
 const INDICATORS = [["reach", "Охват и активность"], ["usage", "Использование функций"], ["txn", "Транзакции"], ["products", "Продукты"], ["profit", "Доходность"], ["value", "Клиентская ценность"], ["dynamics", "Динамика и изменения"]];
 
-const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "payments", functionId: "phone", productId: "debit" };
+const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "payments", functionId: "phone", productId: "debit", txnCut: "segment" };
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 const life = () => SEGMENTS.filter((s) => !s.slice);
 const byId = (list, id) => list.find((x) => x.id === id);
@@ -151,6 +166,62 @@ function channelHeadline() {
   const base = sum(rows.map((s) => s.base));
   const gross = Math.round(sum(rows.map((s) => pnlOf(s).gross)) * 10) / 10;
   return { base, gross, digital: c.mau / base, txn: c.akb / base, perActive: (gross * 1e6) / c.mau, key: sum(rows.map((s) => s.mau * s.keyUse)) / c.mau };
+}
+function scaleTo(total, weights) {
+  const w = sum(weights);
+  const raw = weights.map((v) => Math.round(total * v / w));
+  raw[raw.indexOf(Math.max(...raw))] += total - sum(raw);
+  return raw;
+}
+function txnCore() {
+  const c = channel();
+  const head = channelHeadline();
+  const rows = life();
+  const fees = Math.round(rows.reduce((a, s) => a + pnlOf(s).fees, 0) * 10) / 10;
+  let attempts = 0;
+  let cancelled = 0;
+  rows.forEach((s) => {
+    const att = s.akb * s.opsPerAkb / TXN_EXTRA[s.id].success;
+    attempts += att;
+    cancelled += att * TXN_EXTRA[s.id].cancel;
+  });
+  const typeOps = [0, 0, 0, 0, 0];
+  rows.forEach((s) => s.txnMix.forEach((share, i) => { typeOps[i] += s.akb * s.opsPerAkb * share; }));
+  const typeTurnover = scaleTo(c.turnover, typeOps.map((ops, i) => ops * [0.72, 1.45, 0.48, 2.6, 1.15][i]));
+  const deviceOps = scaleTo(c.ops, [0.47, 0.47, 0.06]);
+  const deviceTurnover = scaleTo(c.turnover, [0.47 * 0.96, 0.47 * 0.995, 0.06 * 1.35]);
+  return {
+    clients: c.akb, ops: c.ops, turnover: c.turnover, mau: c.mau, base: head.base, gross: head.gross, fees,
+    ticket: c.turnover / c.ops, median: 1520, perClient: c.ops / c.akb,
+    days: rows.reduce((a, s) => a + s.akb * TXN_EXTRA[s.id].days, 0) / c.akb,
+    regularClients: Math.round(rows.reduce((a, s) => a + s.akb * TXN_EXTRA[s.id].regular, 0)),
+    singleClients: Math.round(rows.reduce((a, s) => a + s.akb * TXN_EXTRA[s.id].single, 0)),
+    oneClients: Math.round(rows.reduce((a, s) => a + s.akb * PORTFOLIO[s.id].one, 0)),
+    success: c.ops / attempts, cancel: cancelled / attempts,
+    perActive: c.turnover / c.mau, incomePerOp: head.gross * 1e6 / c.ops, commission: fees * 1e6 / c.akb,
+    typeOps, typeTurnover, deviceOps, deviceTurnover, newClients: NEW_CLIENTS
+  };
+}
+function behaviorOf(t) {
+  const regular = t.regularClients;
+  const fresh = t.newClients;
+  const episodic = t.clients - regular - fresh;
+  const newOps = Math.round(fresh * 2.4);
+  const regularOps = Math.round(regular * 36);
+  const episodicOps = t.ops - newOps - regularOps;
+  const newTurnover = newOps * 1800;
+  const regularTurnover = Math.round(regularOps * 4100);
+  const episodicTurnover = t.turnover - newTurnover - regularTurnover;
+  const highOps = Math.round(t.ops * 0.31);
+  const highTurnover = Math.round(t.turnover * 0.62);
+  const highIncome = Math.round(t.gross * 0.58 * 10) / 10;
+  return {
+    regular, episodic, fresh, sleeping: SLEEPING, never: t.base - t.clients - SLEEPING,
+    newOps, regularOps, episodicOps, newTurnover, regularTurnover, episodicTurnover,
+    highClients: HIGH_CLIENTS, lowClients: t.clients - HIGH_CLIENTS,
+    highOps, lowOps: t.ops - highOps, highTurnover, lowTurnover: t.turnover - highTurnover,
+    highIncome, lowIncome: Math.round((t.gross - highIncome) * 10) / 10
+  };
 }
 const people = (n) => Math.abs(n) >= 1e6 ? (n / 1e6).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " млн" : Math.round(n / 1000).toLocaleString("ru-RU") + " тыс.";
 const count = (n) => Math.abs(n) >= 1e6 ? (n / 1e6).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " млн" : Math.abs(n) >= 1000 ? Math.round(n / 1000).toLocaleString("ru-RU") + " тыс." : Math.round(n).toLocaleString("ru-RU");
@@ -403,6 +474,121 @@ function pointChart(title, caption, points, xLabel, yLabel, sizeLabel) {
   return `<section class="block"><h3>${esc(title)}</h3><svg class="line" viewBox="0 0 ${w} ${h}"><line x1="${left}" y1="${top}" x2="${left}" y2="${h - bottom}" stroke="#e3e6eb" /><line x1="${left}" y1="${h - bottom}" x2="${w - right}" y2="${h - bottom}" stroke="#e3e6eb" />${marks}<text x="${left}" y="${h - 14}" font-size="11" fill="#8b939e">${esc(xLabel)}</text><text x="8" y="${top + 12}" font-size="11" fill="#8b939e">${esc(yLabel)}</text>${sizeLabel ? `<text x="${w - right}" y="${h - 14}" text-anchor="end" font-size="11" fill="#8b939e">${esc(sizeLabel)}</text>` : ""}</svg><p class="caption">${esc(caption)}</p></section>`;
 }
 
+function renderTxnActivity() {
+  const t = txnCore();
+  const b = behaviorOf(t);
+  const notes = [["info", "Как читается транзакционная активность", "Клиенты с операцией — это АКБ: успешная финансовая операция за 30 дней. Сумма операций — оборот канала. Средний чек — оборот / успешные операции. Медиана чека задана по каналу и не равна среднему медиан сегментов. Регулярные и клиенты с одной операцией считаются внутри АКБ. Активный клиент для оборота — MAU. Доход на операцию — валовый доход / успешные операции. Комиссия на клиента — комиссионный доход / АКБ. Успех и отмены — доли попыток, остаток приходится на технические отказы."]];
+  const top = t.typeOps.indexOf(Math.max(...t.typeOps));
+  const stats = [
+    [people(t.clients), "Клиенты с хотя бы одной операцией"],
+    [count(t.ops), "Количество операций"],
+    [money(t.turnover), "Сумма операций"],
+    [rub(t.ticket), "Средний чек"],
+    [rub(t.median), "Медианный чек"],
+    [num(t.perClient, 1), "Операций на клиента"],
+    [num(t.days, 1), "Активных транзакционных дней"],
+    [pct(t.regularClients / t.clients), "Доля регулярных клиентов"],
+    [pct(t.singleClients / t.clients), "Доля клиентов с одной операцией"],
+    [pct(t.typeOps[top] / t.ops), "Доля операций по типам, " + TXN[top].toLowerCase()],
+    [pct(t.success), "Доля успешных операций"],
+    [pct(t.cancel), "Доля отмененных операций"],
+    [rub(t.perActive), "Оборот на активного клиента"],
+    [rub(t.incomePerOp), "Доход на операцию"],
+    [rub(t.commission), "Комиссия на клиента"]
+  ];
+  const charts = [bars("Доля операций по типам", cap, TXN.map((name, i) => ({ label: name, value: t.typeOps[i] / t.ops, text: pct(t.typeOps[i] / t.ops) })))];
+  const tables = [];
+  const cut = state.txnCut;
+  if (cut === "segment") {
+    const headers = ["Сегмент", "Клиенты", "Операции", "Сумма", "Средний чек", "Медиана", "На клиента", "Дней", "Регулярные", "Одна операция"];
+    const body = life().map((s) => {
+      const extra = TXN_EXTRA[s.id];
+      const ops = s.akb * s.opsPerAkb;
+      const turnover = s.akb * s.turnoverPerAkb;
+      return [s.name, people(s.akb), count(ops), money(turnover), rub(turnover / ops), rub(extra.median), num(s.opsPerAkb, 1), num(extra.days, 1), pct(extra.regular), pct(extra.single)];
+    });
+    body.push(["Канал", people(t.clients), count(t.ops), money(t.turnover), rub(t.ticket), rub(t.median), num(t.perClient, 1), num(t.days, 1), pct(t.regularClients / t.clients), pct(t.singleClients / t.clients)]);
+    tables.push(table("Жизненный цикл", "Сумма клиентов, операций и оборота равна каналу. Медиана канала не складывается из медиан строк. " + cap, headers, body, (ri) => ri === body.length - 1));
+    tables.push(table("Срезы", "Срезы пересекаются с циклом и в сумму канала не входят. " + cap, headers, SEGMENTS.filter((s) => s.slice).map((s) => {
+      const extra = TXN_EXTRA[s.id];
+      const ops = s.akb * s.opsPerAkb;
+      const turnover = s.akb * s.turnoverPerAkb;
+      return [s.name, people(s.akb), count(ops), money(turnover), rub(turnover / ops), rub(extra.median), num(s.opsPerAkb, 1), num(extra.days, 1), pct(extra.regular), pct(extra.single)];
+    })));
+    charts.push(bars("Операции жизненного цикла", cap, life().map((s) => ({ label: s.short, value: s.akb * s.opsPerAkb, text: count(s.akb * s.opsPerAkb) }))));
+  } else if (cut === "function") {
+    notes.push(["info", "Функции не покрывают все операции", "В таблице — успешные завершения сценариев. Их сумма меньше 67,79 млн операций канала: часть операций проходит вне этих восьми сценариев."]);
+    charts.push(bars("Успешные операции сценариев", cap, SCENARIOS.map((f) => ({ label: f.short, value: f.success, text: count(f.success) }))));
+    tables.push(table("Сценарии", cap, ["Сценарий", "Клиенты", "Успехи", "Success rate", "Прямой результат", "На операцию"], SCENARIOS.map((f) => [f.short, people(scenarioMau(f)), count(f.success), pct(f.success / f.starts), mlnRub(f.incomeMln), rub((f.incomeMln * 1e6) / f.success)])));
+  } else if (cut === "product") {
+    notes.push(["info", "Держатель входит в каждый свой продукт", "Оценка операций — держатели × операции на держателя. Клиент с картой и вкладом стоит в обеих строках, поэтому сумма не равна операциям канала."]);
+    charts.push(bars("Операций на держателя", cap, PRODUCTS.map((p) => ({ label: p.name, value: p.opsPerHolder, text: String(p.opsPerHolder) }))));
+    tables.push(table("Продукты", cap, ["Продукт", "Держатели", "На держателя", "Оценка операций", "Доход продукта"], PRODUCTS.map((p, i) => {
+      const holdersN = holders(i);
+      return [p.name, people(holdersN), String(p.opsPerHolder), count(holdersN * p.opsPerHolder), mlnRub(p.incomeMln)];
+    })));
+  } else if (cut === "type") {
+    tables.push(table("Типы операций", "Сумма операций и оборота равна каналу. " + cap, ["Тип", "Операции", "Доля", "Сумма", "Средний чек"], TXN.map((name, i) => [name, count(t.typeOps[i]), pct(t.typeOps[i] / t.ops), money(t.typeTurnover[i]), rub(t.typeTurnover[i] / t.typeOps[i])])));
+  } else if (cut === "channel" || cut === "device") {
+    const names = cut === "channel" ? ["Мобильное приложение", "Интернет-банк"] : ["iOS", "Android", "Веб"];
+    const ops = cut === "channel" ? [t.deviceOps[0] + t.deviceOps[1], t.deviceOps[2]] : t.deviceOps;
+    const turnover = cut === "channel" ? [t.deviceTurnover[0] + t.deviceTurnover[1], t.deviceTurnover[2]] : t.deviceTurnover;
+    notes.push(["info", cut === "channel" ? "Канал проведения операции" : "Устройство", "Операции и оборот распределены без пересечения. Интернет-банк совпадает с вебом, мобильное приложение — с суммой iOS и Android."]);
+    charts.push(bars(cut === "channel" ? "Операции по каналам" : "Операции по устройствам", cap, names.map((name, i) => ({ label: name, value: ops[i], text: count(ops[i]) }))));
+    tables.push(table(cut === "channel" ? "Канал" : "Устройство", "Сумма строк равна операциям и обороту канала. " + cap, ["", "Операции", "Доля", "Сумма", "Средний чек"], names.map((name, i) => [name, count(ops[i]), pct(ops[i] / t.ops), money(turnover[i]), rub(turnover[i] / ops[i])])));
+  } else if (cut === "period") {
+    const akb = [...HIST.akb.map((v) => v * 1e6), t.clients];
+    const ops = akb.map((v, i) => i === 5 ? t.ops : Math.round(t.ops * v / t.clients));
+    const turnover = akb.map((v, i) => i === 5 ? t.turnover : Math.round(t.turnover * v / t.clients));
+    charts.push(bars("Операции по месяцам", cap, MONTHS.map((name, i) => ({ label: name, value: ops[i], text: count(ops[i]) }))));
+    tables.push(table("Апрель–сентябрь 2026", "Сентябрь совпадает с карточками канала. " + cap, ["Месяц", "Клиенты", "Операции", "Сумма", "Средний чек"], MONTHS.map((name, i) => [name, people(akb[i]), count(ops[i]), money(turnover[i]), rub(turnover[i] / ops[i])]), (ri) => ri === 5));
+  } else if (cut === "tenure") {
+    const rows = [
+      ["Новые", b.fresh, b.newOps, b.newTurnover],
+      ["Существующие", t.clients - b.fresh, t.ops - b.newOps, t.turnover - b.newTurnover]
+    ];
+    notes.push(["info", "Новый клиент", "Новый — первая операция в сентябре. Существующие — остальные клиенты АКБ. Сумма двух строк равна АКБ, операциям и обороту."]);
+    charts.push(bars("Клиенты", cap, rows.map((r) => ({ label: r[0], value: r[1], text: people(r[1]) }))));
+    tables.push(table("Новые и существующие", cap, ["Группа", "Клиенты", "Операции", "Сумма", "На клиента", "Средний чек"], rows.map((r) => [r[0], people(r[1]), count(r[2]), money(r[3]), num(r[2] / r[1], 1), rub(r[3] / r[2])])));
+  } else if (cut === "breadth") {
+    const oneOps = Math.round(t.oneClients * 8);
+    const oneTurnover = oneOps * 1400;
+    const rows = [
+      ["Один продукт", t.oneClients, oneOps, oneTurnover],
+      ["Несколько продуктов", t.clients - t.oneClients, t.ops - oneOps, t.turnover - oneTurnover]
+    ];
+    notes.push(["info", "Ширина портфеля", "Один продукт — доля АКБ из продуктового портфеля сегментов. Несколько продуктов — остальные клиенты АКБ. Сумма строк равна АКБ, операциям и обороту."]);
+    charts.push(bars("Клиенты по ширине портфеля", cap, rows.map((r) => ({ label: r[0], value: r[1], text: people(r[1]) }))));
+    tables.push(table("Один и несколько продуктов", cap, ["Группа", "Клиенты", "Операции", "Сумма", "На клиента", "Средний чек"], rows.map((r) => [r[0], people(r[1]), count(r[2]), money(r[3]), num(r[2] / r[1], 1), rub(r[3] / r[2])])));
+  } else {
+    charts.push(bars("Клиенты поведенческих групп", "Новые, регулярные и эпизодические в сумме равны АКБ. " + cap, [
+      { label: "Регулярные", value: b.regular, text: people(b.regular) },
+      { label: "Эпизодические", value: b.episodic, text: people(b.episodic) },
+      { label: "Спящие", value: b.sleeping, text: people(b.sleeping) },
+      { label: "Новые", value: b.fresh, text: people(b.fresh) }
+    ]));
+  }
+  if (cut !== "behavior") {
+    charts.push(bars("Поведенческие группы, клиенты", cap, [
+      { label: "Регулярные", value: b.regular, text: people(b.regular) },
+      { label: "Эпизодические", value: b.episodic, text: people(b.episodic) },
+      { label: "Новые", value: b.fresh, text: people(b.fresh) },
+      { label: "Спящие", value: b.sleeping, text: people(b.sleeping) }
+    ]));
+  }
+  tables.push(table("Поведенческие группы", "Новые, регулярные и эпизодические в сумме равны АКБ. Спящие в текущем месяце не оперировали. Вместе с клиентами без операций в канале строки равны базе. " + cap, ["Группа", "Критерий", "Клиенты", "Операции", "Сумма"], [
+    ["Регулярные", "Высокая частота и недавняя активность", people(b.regular), count(b.regularOps), money(b.regularTurnover)],
+    ["Эпизодические", "Низкая частота, но недавняя активность", people(b.episodic), count(b.episodicOps), money(b.episodicTurnover)],
+    ["Спящие", "Нет операций в текущем периоде, были ранее", people(b.sleeping), "0", "0 ₽"],
+    ["Новые", "Первая операция в выбранном периоде", people(b.fresh), count(b.newOps), money(b.newTurnover)],
+    ["Без операций в канале", "В сентябре и раньше операций в канале не было", people(b.never), "0", "0 ₽"]
+  ]));
+  tables.push(table("Ценность транзакционных клиентов", "Высокоценные и низкоценные в сумме равны АКБ, операциям, обороту и валовому доходу. " + cap, ["Группа", "Критерий", "Клиенты", "Операции", "Оборот", "Доход"], [
+    ["Высокоценные", "Высокий оборот или доход", people(b.highClients), count(b.highOps), money(b.highTurnover), mln1(b.highIncome)],
+    ["Низкоценные", "Активность есть, но доходность низкая", people(b.lowClients), count(b.lowOps), money(b.lowTurnover), mln1(b.lowIncome)]
+  ]));
+  return { notes, stats, charts, tables };
+}
 function build() {
   const c = channel();
   const segment = byId(SEGMENTS, state.segmentId);
@@ -417,7 +603,13 @@ function build() {
   const tables = [];
   const addStats = (items) => items.forEach((s) => stats.push(s));
 
-  if (state.indicator === "reach" && state.level === "channel") {
+  if (state.level === "txnact") {
+    const board = renderTxnActivity();
+    board.notes.forEach((n) => notes.push(n));
+    board.stats.forEach((s) => stats.push(s));
+    board.charts.forEach((s) => charts.push(s));
+    board.tables.forEach((s) => tables.push(s));
+  } else if (state.indicator === "reach" && state.level === "channel") {
     const head = channelHeadline();
     notes.push(["info", "Как читаются 12 карточек", "Цифрово активные — MAU / клиентская база. Транзакционные — АКБ / база. Доход канала — валовый доход жизненного цикла, прибыль — чистая, она равна клиентскому доходу. Доход на активного — валовый / MAU. Продукты — действующие договоры на клиента АКБ. Ключевые функции — доля MAU с переводом по телефону, QR или кэшбэком."]);
     addStats([
@@ -686,21 +878,23 @@ function build() {
     charts.push(line("Индекс к апрелю, апрель = 100", "Апрель–сентябрь 2026. " + cap, MONTHS, [{ name: name, data: own }, { name: "Канал", data: chIdx }]));
   }
 
-  const scope = state.level === "channel" ? "Весь цифровой канал" : state.level === "segment" ? segment.name + (segment.slice ? " · срез" : "") : onScenario ? section.name + " → " + fn.name : section.name + " · весь раздел";
+  const scope = state.level === "channel" ? "Весь цифровой канал" : state.level === "segment" ? segment.name + (segment.slice ? " · срез" : "") : state.level === "txnact" ? "Транзакционная активность канала" : onScenario ? section.name + " → " + fn.name : section.name + " · весь раздел";
   const entity = state.level === "segment"
     ? pills(SEGMENTS.map((s) => [s.id, s.slice ? s.short + " · срез" : s.short]), "segmentId", state.segmentId)
     : state.level === "journey"
       ? `<p class="label">Раздел</p>${pills(SECTIONS.map((s) => [s.id, s.name]), "sectionId", state.sectionId)}<p class="label">Сценарий</p>${pills([["section", "Весь раздел"], ...kids(state.sectionId).map((s) => [s.id, s.short])], "functionId", onScenario ? fn.id : "section")}`
       : "";
-  const title = INDICATORS.find((x) => x[0] === state.indicator)[1];
+  const title = state.level === "txnact" ? TXN_CUTS.find((x) => x[0] === state.txnCut)[1] : INDICATORS.find((x) => x[0] === state.indicator)[1];
+  const switcher = state.level === "txnact"
+    ? `<p class="label">Разрез</p>${pills(TXN_CUTS, "txnCut", state.txnCut)}`
+    : `<p class="label">Тип показателя</p>${pills(INDICATORS, "indicator", state.indicator)}`;
   document.getElementById("app").innerHTML = `
     <h1>Дэшборд цифрового канала</h1>
     <p class="lead">Одна витрина. Верхний ряд задаёт уровень анализа, нижний — тип показателя. Сентябрь 2026, цифры иллюстративные и сведены между собой.</p>
     <p class="label">Уровень анализа</p>
     ${pills(LEVELS, "level", state.level)}
     ${entity}
-    <p class="label">Тип показателя</p>
-    ${pills(INDICATORS, "indicator", state.indicator)}
+    ${switcher}
     <div class="scope"><h2>${esc(title)}</h2><p>${esc(scope)} · сентябрь 2026</p></div>
     ${notes.map((n) => `<div class="note${n[0] === "warn" ? " warn" : ""}"><strong>${esc(n[1])}</strong><p>${esc(n[2])}</p></div>`).join("")}
     <div class="kpis">${stats.map((s) => `<div class="kpi${s[2] ? " warn" : ""}"><b>${esc(s[0])}</b><span>${esc(s[1])}</span></div>`).join("")}</div>
