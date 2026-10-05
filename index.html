@@ -172,6 +172,49 @@ function money(n) {
   return rub(n);
 }
 function peersOf(segment) { return SEGMENTS.filter((s) => s.slice === segment.slice); }
+const mln1 = (n) => n.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " млн ₽";
+const SOURCE_MIX = [[0.12, 0.28, 0.52, 0.08], [0.62, 0.12, 0.18, 0.08], [0.88, 0.06, 0, 0.06], [0.82, 0.1, 0, 0.08], [0.84, 0.14, 0, 0.02], [0.9, 0.08, 0, 0.02], [0.08, 0.78, 0, 0.14]];
+const SOURCE_NAMES = ["Процентный", "Комиссии", "Карты", "Пакеты"];
+const CREDIT_PRODUCTS = [1, 4, 5];
+const DEPOSIT_PRODUCTS = [2, 3];
+const DRIVER_NAMES = ["Обращения", "Отделения", "Звонки", "Ручные обработки", "Инфраструктура"];
+const DRIVER_UNITS = [180, 450, 90, 250, 1];
+const PNL = {
+  youth: { opex: 42.1, comms: 15, acq: 34.8, risk: 18, drivers: [0.04, 0.01, 0.08, 0.02, 35], shares: [0.46, 0.1, 0.06, 0.14, 0.12, 0.02, 0.1] },
+  career: { opex: 107.5, comms: 16.6, acq: 35.8, risk: 70, drivers: [0.05, 0.02, 0.06, 0.03, 38], shares: [0.26, 0.18, 0.12, 0.14, 0.16, 0.04, 0.1] },
+  working: { opex: 118.1, comms: 16.1, acq: 21.6, risk: 140, drivers: [0.06, 0.04, 0.07, 0.04, 40], shares: [0.2, 0.18, 0.18, 0.12, 0.16, 0.1, 0.06] },
+  mature: { opex: 91.1, comms: 11.8, acq: 10.7, risk: 95, drivers: [0.07, 0.08, 0.09, 0.05, 42], shares: [0.14, 0.16, 0.26, 0.14, 0.12, 0.12, 0.06] },
+  senior: { opex: 34.4, comms: 5.8, acq: 4.6, risk: 40, drivers: [0.09, 0.12, 0.14, 0.06, 40], shares: [0.16, 0.1, 0.34, 0.18, 0.08, 0.08, 0.06] },
+  pension: { opex: 13.5, comms: 3.4, acq: 3.1, risk: 12, drivers: [0.11, 0.18, 0.16, 0.07, 36], shares: [0.14, 0.04, 0.5, 0.18, 0.04, 0.06, 0.04] },
+  privilege: { opex: 48.4, comms: 6.7, acq: 4.2, risk: 40, drivers: [0.04, 0.03, 0.04, 0.03, 55], shares: [0.1, 0.16, 0.24, 0.16, 0.06, 0.12, 0.16] },
+  prime: { opex: 13.4, comms: 1.9, acq: 1.4, risk: 18, drivers: [0.03, 0.02, 0.03, 0.04, 90], shares: [0.08, 0.14, 0.22, 0.12, 0.06, 0.18, 0.2] },
+  salary: { opex: 191.2, comms: 17.4, acq: 19, risk: 90, drivers: [0.05, 0.03, 0.05, 0.03, 36], shares: [0.3, 0.14, 0.22, 0.14, 0.1, 0.06, 0.04] }
+};
+function serveParts(s) {
+  const drivers = PNL[s.id].drivers;
+  const counts = [drivers[0] * s.base, drivers[1] * s.base, drivers[2] * s.base, drivers[3] * s.base, s.base];
+  const raw = counts.map((count, i) => count * DRIVER_UNITS[i] / 1e6);
+  const parts = raw.map((v) => Math.round(v * 10) / 10);
+  const total = Math.round(raw.reduce((a, b) => a + b, 0) * 10) / 10;
+  const drift = Math.round((total - parts.reduce((a, b) => a + b, 0)) * 10) / 10;
+  parts[4] = Math.round((parts[4] + drift) * 10) / 10;
+  return { counts, parts, total };
+}
+function pnlOf(s) {
+  const row = PNL[s.id];
+  const serve = serveParts(s).total;
+  const costs = row.opex + serve + row.comms + row.acq + row.risk;
+  const gross = Math.round((s.incomeMln + costs) * 10) / 10;
+  const grid = row.shares.map((share, p) => SOURCE_MIX[p].map((mix) => Math.round(gross * share * mix * 10) / 10));
+  let flatSum = grid.flat().reduce((a, b) => a + b, 0);
+  const drift = Math.round((gross - flatSum) * 10) / 10;
+  let best = { r: 0, c: 0, v: -1 };
+  grid.forEach((line, r) => line.forEach((v, c) => { if (v > best.v) best = { r, c, v }; }));
+  grid[best.r][best.c] = Math.round((grid[best.r][best.c] + drift) * 10) / 10;
+  const sources = [0, 1, 2, 3].map((i) => grid.reduce((a, line) => a + line[i], 0));
+  const productSum = (indexes) => indexes.reduce((a, i) => a + grid[i].reduce((x, y) => x + y, 0), 0);
+  return { gross, interest: sources[0], fees: sources[1], cards: sources[2], packages: sources[3], credit: productSum(CREDIT_PRODUCTS), deposits: productSum(DEPOSIT_PRODUCTS), opex: row.opex, serve, comms: row.comms, acq: row.acq, risk: row.risk, costs, net: s.incomeMln, grid, customer: Math.round((gross - serve - row.risk) * 10) / 10 };
+}
 function audience(weights) {
   const w = sum(weights);
   let income = 0, products = 0, ops = 0;
@@ -210,6 +253,43 @@ function line(title, caption, categories, series) {
   return `<section class="block"><h3>${esc(title)}</h3>${legend}<svg class="line" viewBox="0 0 ${w} ${h}">${paths}${labels}</svg><p class="caption">${esc(caption)}</p></section>`;
 }
 const cap = "Иллюстративные данные · сентябрь 2026.";
+const POINT_COLORS = ["#1d4e89", "#5b7c99", "#8a5a12", "#3f6f54", "#6b5b7a", "#8d4b3a", "#3e6b62", "#6e5a3a", "#4d6270"];
+function comboChart(title, caption, categories, gross, profit, perMau) {
+  const w = 680, h = 280, left = 48, right = 58, top = 28, bottom = 36;
+  const n = categories.length;
+  const group = (w - left - right) / n;
+  const barMax = Math.max(...gross, ...profit, 1);
+  const lineMax = Math.max(...perMau, 1);
+  const barW = 14;
+  const yBar = (v) => top + (h - top - bottom) * (1 - v / barMax);
+  const yLine = (v) => top + (h - top - bottom) * (1 - v / lineMax);
+  const xCenter = (i) => left + group * i + group / 2;
+  const base = top + (h - top - bottom);
+  const rects = categories.map((_, i) => {
+    const gx = xCenter(i) - barW;
+    const gy = yBar(gross[i]);
+    const px = xCenter(i);
+    const py = yBar(profit[i]);
+    return `<rect x="${gx}" y="${gy}" width="${barW - 2}" height="${base - gy}" fill="#1d4e89" /><rect x="${px}" y="${py}" width="${barW - 2}" height="${base - py}" fill="#8a93a0" />`;
+  }).join("");
+  const line = `<polyline fill="none" stroke="#1c1f24" stroke-width="2" points="${perMau.map((v, i) => `${xCenter(i)},${yLine(v)}`).join(" ")}" />` + perMau.map((v, i) => `<circle cx="${xCenter(i)}" cy="${yLine(v)}" r="3.5" fill="#1c1f24" />`).join("");
+  const labels = categories.map((name, i) => `<text x="${xCenter(i)}" y="${h - 12}" text-anchor="middle" font-size="11" fill="#5e6772">${esc(name)}</text>`).join("");
+  return `<section class="block"><h3>${esc(title)}</h3><div class="legend"><span><i class="swatch" style="background:#1d4e89"></i>Валовый доход</span><span><i class="swatch" style="background:#8a93a0"></i>Чистая прибыль</span><span><i class="swatch" style="background:#1c1f24"></i>Прибыль на MAU</span></div><svg class="line" viewBox="0 0 ${w} ${h}">${rects}${line}${labels}<text x="4" y="16" font-size="11" fill="#8b939e">млн ₽</text><text x="${w - 4}" y="16" text-anchor="end" font-size="11" fill="#8b939e">₽ на MAU</text></svg><p class="caption">${esc(caption)}</p></section>`;
+}
+function pointChart(title, caption, points, xLabel, yLabel, sizeLabel) {
+  const w = 680, h = 320, left = 58, right = 20, top = 16, bottom = 42;
+  const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const padX = (maxX - minX) * 0.14 || 1, padY = (maxY - minY) * 0.18 || 1;
+  const xOf = (v) => left + ((v - (minX - padX)) / (maxX - minX + padX * 2)) * (w - left - right);
+  const yOf = (v) => top + (1 - (v - (minY - padY)) / (maxY - minY + padY * 2)) * (h - top - bottom);
+  const maxSize = Math.max(...points.map((p) => p.size || 1), 1);
+  const marks = points.map((p, i) => {
+    const r = p.size == null ? 7 : 8 + 16 * Math.sqrt(p.size / maxSize);
+    return `<circle cx="${xOf(p.x)}" cy="${yOf(p.y)}" r="${r}" fill="${POINT_COLORS[i % POINT_COLORS.length]}" /><text x="${xOf(p.x)}" y="${yOf(p.y) - r - 4}" text-anchor="middle" font-size="11" fill="#5e6772">${esc(p.name)}</text>`;
+  }).join("");
+  return `<section class="block"><h3>${esc(title)}</h3><svg class="line" viewBox="0 0 ${w} ${h}"><line x1="${left}" y1="${top}" x2="${left}" y2="${h - bottom}" stroke="#e3e6eb" /><line x1="${left}" y1="${h - bottom}" x2="${w - right}" y2="${h - bottom}" stroke="#e3e6eb" />${marks}<text x="${left}" y="${h - 14}" font-size="11" fill="#8b939e">${esc(xLabel)}</text><text x="8" y="${top + 12}" font-size="11" fill="#8b939e">${esc(yLabel)}</text>${sizeLabel ? `<text x="${w - right}" y="${h - 14}" text-anchor="end" font-size="11" fill="#8b939e">${esc(sizeLabel)}</text>` : ""}</svg><p class="caption">${esc(caption)}</p></section>`;
+}
 
 function build() {
   const c = channel();
@@ -337,13 +417,53 @@ function build() {
     const pen = (i) => life().reduce((a, s, k) => a + weights[k] * s.productPen[i], 0) / w;
     addStats([[fn.openLabel && state.level === "function" ? count(fn.success) : num(audience(weights).productsPer, 2), fn.openLabel && state.level === "function" ? fn.openLabel : "Оценка продуктов на клиента"], [pct(pen(0)), "Оценка доли с дебетовой картой"], [pct(pen(2)), "Оценка доли с вкладом"], [pct(pen(1)), "Оценка доли с кредитной картой"]]);
     charts.push(bars("Оценка портфеля аудитории", cap, PRODUCTS.map((p, i) => ({ label: p.name, value: pen(i), text: pct(pen(i)) }))));
-  } else if (state.indicator === "profit" && (state.level === "channel" || state.level === "segment")) {
-    if (state.level === "segment") addStats([[mlnRub(segment.incomeMln), "Клиентский доход", segment.incomeMln < 0], [rub(perAkb(segment)), "На 1 АКБ"], [mlnRub(segment.slice ? directOfSlice(segment) : directOfLife(LIFE.indexOf(segment.id))), "Прямой результат сценариев"], [pct(segment.incomeMln / c.incomeMln), "Доля дохода канала"]]);
-    else addStats([[mlnRub(c.incomeMln), "Клиентский доход"], [mlnRub(directTotal()), "Прямой результат сценариев"], [rub(c.incomePerAkb), "На 1 АКБ"], [mlnRub(sectionIncome(byId(SECTIONS, "benefit"))), "Прямой результат Выгоды", true]]);
+  } else if (state.indicator === "profit" && state.level === "channel") {
+    addStats([[mlnRub(c.incomeMln), "Клиентский доход"], [mlnRub(directTotal()), "Прямой результат сценариев"], [rub(c.incomePerAkb), "На 1 АКБ"], [mlnRub(sectionIncome(byId(SECTIONS, "benefit"))), "Прямой результат Выгоды", true]]);
     charts.push(bars("Клиентский доход цикла", cap, life().map((s) => ({ label: s.short, value: s.incomeMln, text: mlnRub(s.incomeMln) }))));
     const rows = life().map((s, i) => [s.name, mlnRub(s.incomeMln), pct(s.incomeMln / c.incomeMln), rub(perAkb(s)), mlnRub(directOfLife(i))]);
     rows.push(["Сумма цикла", mlnRub(c.incomeMln), "100 %", rub(c.incomePerAkb), mlnRub(directTotal())]);
     tables.push(table("Доход жизненного цикла", cap, ["Сегмент", "Клиентский доход", "Доля", "На 1 АКБ", "Прямой результат"], rows));
+  } else if (state.indicator === "profit" && state.level === "segment") {
+    const p = pnlOf(segment);
+    const peers = peersOf(segment);
+    const leader = life().reduce((best, s) => s.incomeMln > best.incomeMln ? s : best);
+    const leaderP = pnlOf(leader);
+    const leaderSources = [leaderP.interest, leaderP.fees, leaderP.cards, leaderP.packages];
+    const leaderSource = SOURCE_NAMES[leaderSources.indexOf(Math.max(...leaderSources))].toLowerCase();
+    const parts = serveParts(segment);
+    const per = (mln, clients) => mln * 1e6 / clients;
+    const lifePnls = life().map(pnlOf);
+    notes.push(["info", "Как собрана прибыль сегмента", "Валовый доход = процентный + комиссии + карточные операции + сервисные пакеты. Кредитные продукты и депозиты — второй разрез того же валового, их не прибавляют к источникам. Чистая прибыль = валовый − операционные − обслуживание − коммуникации − привлечение − кредитные потери. Она равна прежнему клиентскому доходу. Customer profitability = валовый − обслуживание − риск. Активный клиент приложения здесь равен MAU. Обслуживание разложено по драйверам с одной ставкой на канал."]);
+    notes.push(["info", "Кто создаёт финансовую ценность", `Наибольшую чистую прибыль в жизненном цикле даёт «${leader.name}»: ${mln1(leader.incomeMln)}. Крупнейший источник валового дохода — ${leaderSource}. Срезы в эту сумму не входят.`]);
+    addStats([
+      [mln1(p.gross), "Валовый доход"],
+      [mln1(p.interest), "Процентный доход"],
+      [mln1(p.fees), "Комиссионный доход"],
+      [mln1(p.cards), "Доход от карточных операций"],
+      [mln1(p.credit), "Доход от кредитных продуктов"],
+      [mln1(p.deposits), "Доход от депозитов и остатков"],
+      [mln1(p.packages), "Доход от сервисных пакетов"],
+      [mln1(p.opex), "Операционные затраты"],
+      [mln1(p.serve), "Стоимость обслуживания"],
+      [mln1(p.comms), "Стоимость коммуникаций"],
+      [mln1(p.acq), "Стоимость привлечения"],
+      [mln1(p.risk), "Кредитные потери и риск"],
+      [mln1(p.net), "Чистая прибыль"],
+      [mln1(p.customer), "Валовый − обслуживание − риск"],
+      [rub(per(p.gross, segment.base)), "Доход на клиента"],
+      [rub(per(p.net, segment.base)), "Прибыль на клиента"],
+      [rub(per(p.gross, segment.mau)), "Доход на MAU и на активного"],
+      [rub(per(p.net, segment.mau)), "Прибыль на MAU и на активного"],
+      [rub(per(p.gross, segment.akb)), "Доход на транзакционного"]
+    ]);
+    charts.push(comboChart("Доход и прибыль жизненного цикла", "Столбцы — валовый доход и чистая прибыль, левая ось. Линия — прибыль на MAU, правая ось. " + cap, life().map((s) => s.short), lifePnls.map((item) => item.gross), life().map((s) => s.incomeMln), life().map((s) => Math.round(per(s.incomeMln, s.mau)))));
+    charts.push(pointChart("Распределение сегментов по ценности", "Ось X — клиенты, тыс. Ось Y — прибыль на клиента, ₽. Размер — вклад в прибыль. " + cap, peers.map((s) => ({ name: s.short, x: Math.round(s.base / 1000), y: Math.round(per(s.incomeMln, s.base)), size: s.incomeMln })), "Клиенты, тыс.", "Прибыль на клиента, ₽", "Размер — вклад в прибыль"));
+    charts.push(pointChart("Доходность и риск", "Ось X — прибыль на клиента, ₽. Ось Y — кредитные потери на клиента, ₽. " + cap, peers.map((s) => ({ name: s.short, x: Math.round(per(s.incomeMln, s.base)), y: Math.round(per(PNL[s.id].risk, s.base)) })), "Прибыль на клиента, ₽", "Риск на клиента, ₽"));
+    tables.push(table("Стоимость обслуживания по драйверам", "Ставка одна на канал: обращение 180 ₽, отделение 450 ₽, звонок 90 ₽, ручная обработка 250 ₽. " + cap, ["Драйвер", "Объём", "Ставка", "Сумма"], DRIVER_NAMES.map((name, i) => [name, count(parts.counts[i]), rub(DRIVER_UNITS[i]), mln1(parts.parts[i])])));
+    const productRows = PRODUCTS.map((prod, i) => [prod.name, ...p.grid[i].map(mln1), mln1(p.grid[i].reduce((a, b) => a + b, 0))]);
+    productRows.push(["Валовый доход", mln1(p.interest), mln1(p.fees), mln1(p.cards), mln1(p.packages), mln1(p.gross)]);
+    tables.push(table("Доход по продуктам и источникам", "Сумма ячеек равна валовому доходу сегмента. " + cap, ["Продукт", ...SOURCE_NAMES, "Всего"], productRows));
+    tables.push(table(segment.slice ? "Срезы по ценности" : "Жизненный цикл по ценности", cap, ["Сегмент", "Валовый", "Прибыль", "На клиента", "На MAU", "Риск на клиента"], peers.map((s) => { const item = pnlOf(s); return [s.name, mln1(item.gross), mln1(item.net), rub(per(item.net, s.base)), rub(per(item.gross, s.mau)), rub(per(item.risk, s.base))]; }), (ri) => peers[ri] && peers[ri].id === segment.id));
   } else if (state.indicator === "profit" && state.level === "section") {
     const income = sectionIncome(section);
     addStats([[mlnRub(income), "Прямой результат раздела", income < 0], [rub((income * 1e6) / section.mau), "На 1 MAU"], [pct(income / directTotal()), "Доля прямого результата"], [mlnRub(directTotal()), "Все сценарии"]]);
