@@ -118,15 +118,10 @@ const SECTIONS = [
   { id: "savings", name: "Накопления", mau: 980000, dau: 145000, financialClients: 210000, noun: "операции", trend: [0.9, 0.92, 0.94, 0.96, 0.98, 1] },
   { id: "credits", name: "Кредиты", mau: 640000, dau: 72000, financialClients: 95000, noun: "операции", trend: [0.88, 0.9, 0.93, 0.95, 0.98, 1] }
 ];
-const CLIENTS = [
-  { id: "a", name: "Карьера, зарплатник", lifeId: "career", benchmarkId: "career", relation: "Зарплатный проект", activeDays: [10, 11, 11, 12, 12, 13], ops: 24, turnover: 72000, incomeRub: 1640, actions: [9, 6, 2, 1, 0, 0, 0, 0], productIds: ["debit", "savings"], txnMix: [0.54, 0.28, 0.1, 0.02, 0.06] },
-  { id: "b", name: "Пенсионер", lifeId: "pension", benchmarkId: "pension", relation: "Пенсионные зачисления", activeDays: [5, 5, 6, 6, 5, 6], ops: 8, turnover: 22000, incomeRub: 1120, actions: [2, 3, 0, 0, 0, 0, 0, 0], productIds: ["debit", "deposit"], txnMix: [0.25, 0.25, 0.25, 0.13, 0.12] },
-  { id: "c", name: "Прайм", lifeId: "mature", benchmarkId: "prime", relation: "Пакет Прайм, жизненный цикл «Зрелые»", activeDays: [12, 12, 13, 13, 14, 15], ops: 28, turnover: 360000, incomeRub: 9400, actions: [7, 4, 6, 0, 2, 0, 0, 0], productIds: ["debit", "credit", "deposit", "savings", "invest"], txnMix: [0.4, 0.22, 0.08, 0.02, 0.28] }
-];
-const LEVELS = [["channel", "Канал"], ["segment", "Сегмент"], ["section", "Раздел"], ["function", "Функция"], ["product", "Продукт"], ["client", "Клиент"]];
+const LEVELS = [["channel", "Канал"], ["segment", "Сегмент"], ["section", "Раздел"], ["function", "Функция"], ["product", "Продукт"]];
 const INDICATORS = [["reach", "Охват и активность"], ["usage", "Использование функций"], ["txn", "Транзакции"], ["products", "Продукты"], ["profit", "Доходность"], ["value", "Клиентская ценность"], ["dynamics", "Динамика и изменения"]];
 
-const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "benefit", functionId: "phone", productId: "debit", clientId: "a" };
+const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "benefit", functionId: "phone", productId: "debit" };
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
 const life = () => SEGMENTS.filter((s) => !s.slice);
 const byId = (list, id) => list.find((x) => x.id === id);
@@ -208,11 +203,9 @@ function build() {
   const section = byId(SECTIONS, state.sectionId);
   const fn = byId(SCENARIOS, state.functionId);
   const product = byId(PRODUCTS, state.productId);
-  const client = byId(CLIENTS, state.clientId);
-  const bench = byId(SEGMENTS, client.benchmarkId);
   const notes = [];
   if (state.indicator === "profit") notes.push(["info", "Две сборки дохода", `Клиентский доход сентября — ${mlnRub(c.incomeMln)}. Прямой результат сценариев — ${mlnRub(directTotal())}: комиссия, маржа в окне 30 дней после открытия и кэшбэк со знаком минус.`]);
-  if ((state.level === "segment" && segment.slice) || (state.level === "client" && bench.slice && (state.indicator === "profit" || state.indicator === "value"))) notes.push(["warn", "Срез уже входит в жизненный цикл", "Привилегия, Прайм и зарплатники пересекаются с жизненным циклом. Их строки в сумму канала не входят."]);
+  if (state.level === "segment" && segment.slice) notes.push(["warn", "Срез уже входит в жизненный цикл", "Привилегия, Прайм и зарплатники пересекаются с жизненным циклом. Их строки в сумму канала не входят."]);
   const stats = [];
   const charts = [];
   const tables = [];
@@ -239,10 +232,6 @@ function build() {
     const i = PRODUCTS.indexOf(product);
     addStats([[people(holders(i)), "Держатели в АКБ"], [pct(holders(i) / c.akb), "Проникновение"], [num(c.productsPerAkb, 2), "Продуктов на 1 АКБ"], [rub(c.incomePerAkb), "Доход на 1 АКБ канала"]]);
     charts.push(bars("Проникновение продуктов", cap, PRODUCTS.map((p, idx) => ({ label: p.name, value: holders(idx) / c.akb, text: pct(holders(idx) / c.akb) }))));
-  } else if (state.indicator === "reach") {
-    const days = client.activeDays[5];
-    addStats([[String(days), "Активных дней из 30"], [pct(days / 30), "Доля дней с действием"], [String(client.actions.filter((n) => n > 0).length), "Сценариев за месяц"], ["Да", "Клиент в АКБ"]]);
-    charts.push(bars("Активные дни", "Среднее среза оценено как DAU/MAU × 30. " + cap, [{ label: "Клиент", value: days, text: String(days) }, { label: bench.short, value: (bench.dau / bench.mau) * 30, text: num((bench.dau / bench.mau) * 30, 1) }]));
   } else if (state.indicator === "usage" && state.level === "channel") {
     const phone = byId(SCENARIOS, "phone");
     addStats([[pct(byId(SECTIONS, "payments").mau / c.mau), "Платежи и переводы"], [pct(scenarioMau(phone) / c.mau), "Перевод по телефону"], [pct(byId(SECTIONS, "benefit").mau / c.mau), "Выгода"], [num(phone.success / scenarioMau(phone), 1), "Операций перевода на MAU"]]);
@@ -262,10 +251,6 @@ function build() {
   } else if (state.indicator === "usage" && state.level === "product") {
     charts.push(bars("Доля держателей в сценарии", cap, SCENARIOS.map((f, i) => ({ label: f.short, value: product.holderUse[i], text: pct(product.holderUse[i]) }))));
     addStats([[pct(product.holderUse[0]), "С переводом по телефону"], [pct(product.holderUse[1]), "С оплатой по QR"], [num(product.opsPerHolder, 0), "Операций на держателя"], [pct(holders(PRODUCTS.indexOf(product)) / c.akb), "Проникновение"]]);
-  } else if (state.indicator === "usage") {
-    const used = SCENARIOS.map((f, i) => ({ f, n: client.actions[i] })).filter((x) => x.n > 0);
-    addStats([[String(used.length), "Сценариев с действием"], [String(sum(client.actions)), "Действий"], [String(client.activeDays[5]), "Активных дней"], [String(client.ops), "Финансовых операций"]]);
-    charts.push(bars("Действия клиента", cap, used.map((x) => ({ label: x.f.short, value: x.n, text: String(x.n) }))));
   } else if (state.indicator === "txn" && state.level === "channel") {
     const mix = [0, 0, 0, 0, 0];
     life().forEach((s) => s.txnMix.forEach((share, i) => { mix[i] += s.akb * s.opsPerAkb * share; }));
@@ -285,9 +270,6 @@ function build() {
   } else if (state.indicator === "txn" && state.level === "product") {
     addStats([[num(product.opsPerHolder, 0), "Операций на держателя"], [num(product.opsPerHolder / c.opsPerAkb, 2), "Индекс к АКБ"], [people(holders(PRODUCTS.indexOf(product))), "Держателей"], [rub(c.turnoverPerAkb), "Оборот на АКБ канала"]]);
     charts.push(bars("Операций на держателя", "Клиент с несколькими продуктами входит в каждую строку. " + cap, PRODUCTS.map((p) => ({ label: p.name, value: p.opsPerHolder, text: String(p.opsPerHolder) }))));
-  } else if (state.indicator === "txn") {
-    addStats([[String(client.ops), "Операций"], [rub(client.turnover), "Оборот"], [rub(client.turnover / client.ops), "Средний чек"], [num(client.ops / bench.opsPerAkb, 2), "Индекс к срезу"]]);
-    charts.push(bars("Структура операций клиента", cap, TXN.map((name, i) => ({ label: name, value: client.txnMix[i], text: pct(client.txnMix[i]) }))));
   } else if (state.indicator === "products" && (state.level === "channel" || state.level === "product")) {
     const i = PRODUCTS.indexOf(product);
     if (state.level === "product") addStats([[people(holders(i)), "Держатели"], [pct(holders(i) / c.akb), "Проникновение"], [mlnRub(product.incomeMln), "Доход продукта"], [rub((product.incomeMln * 1e6) / holders(i)), "На держателя"]]);
@@ -297,9 +279,6 @@ function build() {
   } else if (state.indicator === "products" && state.level === "segment") {
     addStats([[num(productsPer(segment), 2), "Продуктов на 1 АКБ"], [pct(segment.productPen[0]), "Дебетовая карта"], [pct(segment.productPen[1]), "Кредитная карта"], [pct(segment.productPen[2]), "Вклад"]]);
     charts.push(bars("Проникновение в сегменте", cap, PRODUCTS.map((p, i) => ({ label: p.name, value: segment.productPen[i], text: pct(segment.productPen[i]) }))));
-  } else if (state.indicator === "products" && state.level === "client") {
-    addStats([[String(client.productIds.length), "Продуктов у клиента"], [num(productsPer(bench), 2), "В среднем у среза"], [num(client.productIds.length / productsPer(bench), 2), "Индекс глубины"], [client.relation, "Отношение"]]);
-    tables.push(table("Договоры клиента", cap, ["Продукт", "У клиента", "Проникновение среза"], PRODUCTS.map((p, i) => [p.name, client.productIds.includes(p.id) ? "Есть" : "Нет", pct(bench.productPen[i])])));
   } else if (state.indicator === "products") {
     const weights = state.level === "section" ? sectionWeights(section.id) : fn.byLife;
     const w = sum(weights);
@@ -325,9 +304,6 @@ function build() {
     const i = PRODUCTS.indexOf(product);
     addStats([[mlnRub(product.incomeMln), "Доход продукта"], [rub((product.incomeMln * 1e6) / holders(i)), "На держателя"], [pct(product.incomeMln / c.incomeMln), "Доля дохода канала"], [mlnRub(c.incomeMln), "Сумма продуктов"]]);
     charts.push(bars("Доход продуктов", cap, PRODUCTS.map((p) => ({ label: p.name, value: p.incomeMln, text: mlnRub(p.incomeMln) }))));
-  } else if (state.indicator === "profit") {
-    addStats([[rub(client.incomeRub), "Доход клиента"], [rub(perAkb(bench)), "Среднее среза"], [rub(c.incomePerAkb), "Среднее канала"], [num(client.incomeRub / perAkb(bench), 2), "Индекс к срезу"]]);
-    charts.push(bars("Доход на клиента", cap, [{ label: "Клиент", value: client.incomeRub, text: rub(client.incomeRub) }, { label: bench.short, value: perAkb(bench), text: rub(perAkb(bench)) }, { label: "Канал", value: c.incomePerAkb, text: rub(c.incomePerAkb) }]));
   } else if (state.indicator === "value" && (state.level === "channel" || state.level === "segment")) {
     const subject = state.level === "segment" ? segment : null;
     addStats(subject ? [[rub(perAkb(subject)), "Доход на 1 АКБ"], [num(perAkb(subject) / c.incomePerAkb, 2), "Индекс к каналу"], [num(productsPer(subject), 2), "Продуктов"], [num(subject.opsPerAkb, 0), "Операций"]] : [[rub(c.incomePerAkb), "Доход на 1 АКБ"], [num(c.productsPerAkb, 2), "Продуктов на 1 АКБ"], [num(c.opsPerAkb, 1), "Операций на 1 АКБ"], [rub(c.turnoverPerAkb), "Оборот на 1 АКБ"]]);
@@ -344,9 +320,6 @@ function build() {
     const per = (product.incomeMln * 1e6) / holders(i);
     addStats([[rub(per), "Доход на держателя"], [num(per / c.incomePerAkb, 2), "К доходу на АКБ"], [String(product.opsPerHolder), "Операций на держателя"], [pct(holders(i) / c.akb), "Проникновение"]]);
     charts.push(bars("Доход на держателя", cap, PRODUCTS.map((p, idx) => ({ label: p.name, value: (p.incomeMln * 1e6) / holders(idx), text: rub((p.incomeMln * 1e6) / holders(idx)) }))));
-  } else if (state.indicator === "value") {
-    addStats([[rub(client.incomeRub), "Доход клиента"], [num(client.incomeRub / perAkb(bench), 2), "Индекс дохода"], [num(client.productIds.length / productsPer(bench), 2), "Индекс продуктов"], [num(client.ops / bench.opsPerAkb, 2), "Индекс операций"]]);
-    charts.push(bars("Индекс к срезу, 1 = срез", cap, [{ label: "Доход", value: client.incomeRub / perAkb(bench), text: num(client.incomeRub / perAkb(bench), 2) }, { label: "Продукты", value: client.productIds.length / productsPer(bench), text: num(client.productIds.length / productsPer(bench), 2) }, { label: "Операции", value: client.ops / bench.opsPerAkb, text: num(client.ops / bench.opsPerAkb, 2) }]));
   } else if (state.indicator === "dynamics" && state.level === "channel") {
     const mau = [...HIST.mau, Math.round(c.mau / 1e4) / 100];
     const akb = [...HIST.akb, Math.round(c.akb / 1e4) / 100];
@@ -360,19 +333,17 @@ function build() {
     if (state.level === "segment") { series = segment.trend.map((t) => segment.mau / 1e6 * t); name = segment.short; }
     else if (state.level === "section") { series = section.trend.map((t) => section.mau / 1e6 * t); name = section.name; }
     else if (state.level === "function") { series = fn.trend.map((t) => scenarioMau(fn) / 1e6 * t); name = fn.short; }
-    else if (state.level === "product") { series = product.trend.map((t) => holders(PRODUCTS.indexOf(product)) / 1e6 * t); name = product.name; }
-    else { series = client.activeDays.map(Number); name = client.name; }
+    else { series = product.trend.map((t) => holders(PRODUCTS.indexOf(product)) / 1e6 * t); name = product.name; }
     const base = series[0];
     const own = series.map((v) => Math.round(v / base * 1000) / 10);
     const chMau = [...HIST.mau, c.mau / 1e6];
     const chIdx = chMau.map((v) => Math.round(v / chMau[0] * 1000) / 10);
-    addStats([[state.level === "client" ? String(series[5]) : delta(series[5], series[4]), state.level === "client" ? "Активных дней в сентябре" : "К августу"], [num(own[5], 1), "Индекс к апрелю"], [num(chIdx[5], 1), "Индекс канала к апрелю"], [state.level === "client" ? rub(client.incomeRub) : name, state.level === "client" ? "Доход в сентябре" : "Срез"]]);
-    if (state.level === "client") charts.push(line("Активные дни клиента", "Апрель–сентябрь 2026. " + cap, MONTHS, [{ name: "Активные дни", data: client.activeDays }]));
-    else charts.push(line("Индекс к апрелю, апрель = 100", "Апрель–сентябрь 2026. " + cap, MONTHS, [{ name: name, data: own }, { name: "Канал", data: chIdx }]));
+    addStats([[delta(series[5], series[4]), "К августу"], [num(own[5], 1), "Индекс к апрелю"], [num(chIdx[5], 1), "Индекс канала к апрелю"], [name, "Срез"]]);
+    charts.push(line("Индекс к апрелю, апрель = 100", "Апрель–сентябрь 2026. " + cap, MONTHS, [{ name: name, data: own }, { name: "Канал", data: chIdx }]));
   }
 
-  const scope = state.level === "channel" ? "Весь цифровой канал" : state.level === "segment" ? segment.name + (segment.slice ? " · срез" : "") : state.level === "section" ? section.name : state.level === "function" ? byId(SECTIONS, fn.sectionId).name + " → " + fn.name : state.level === "product" ? product.name : client.name + " · " + client.relation;
-  const entity = state.level === "segment" ? pills(SEGMENTS.map((s) => [s.id, s.slice ? s.short + " · срез" : s.short]), "segmentId", state.segmentId) : state.level === "section" ? pills(SECTIONS.map((s) => [s.id, s.name]), "sectionId", state.sectionId) : state.level === "function" ? pills(SCENARIOS.map((s) => [s.id, s.short]), "functionId", state.functionId) : state.level === "product" ? pills(PRODUCTS.map((s) => [s.id, s.name]), "productId", state.productId) : state.level === "client" ? pills(CLIENTS.map((s) => [s.id, s.name]), "clientId", state.clientId) : "";
+  const scope = state.level === "channel" ? "Весь цифровой канал" : state.level === "segment" ? segment.name + (segment.slice ? " · срез" : "") : state.level === "section" ? section.name : state.level === "function" ? byId(SECTIONS, fn.sectionId).name + " → " + fn.name : product.name;
+  const entity = state.level === "segment" ? pills(SEGMENTS.map((s) => [s.id, s.slice ? s.short + " · срез" : s.short]), "segmentId", state.segmentId) : state.level === "section" ? pills(SECTIONS.map((s) => [s.id, s.name]), "sectionId", state.sectionId) : state.level === "function" ? pills(SCENARIOS.map((s) => [s.id, s.short]), "functionId", state.functionId) : state.level === "product" ? pills(PRODUCTS.map((s) => [s.id, s.name]), "productId", state.productId) : "";
   const title = INDICATORS.find((x) => x[0] === state.indicator)[1];
   document.getElementById("app").innerHTML = `
     <h1>Дэшборд цифрового канала</h1>
