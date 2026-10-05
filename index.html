@@ -145,6 +145,13 @@ function channel() {
   const holderCount = PRODUCTS.reduce((a, _, i) => a + holders(i), 0);
   return { mau, dau, akb, incomeMln, ops, turnover, stickiness: dau / mau, incomePerAkb: (incomeMln * 1e6) / akb, opsPerAkb: ops / akb, turnoverPerAkb: turnover / akb, productsPerAkb: holderCount / akb };
 }
+function channelHeadline() {
+  const c = channel();
+  const rows = life();
+  const base = sum(rows.map((s) => s.base));
+  const gross = Math.round(sum(rows.map((s) => pnlOf(s).gross)) * 10) / 10;
+  return { base, gross, digital: c.mau / base, txn: c.akb / base, perActive: (gross * 1e6) / c.mau, key: sum(rows.map((s) => s.mau * s.keyUse)) / c.mau };
+}
 const people = (n) => Math.abs(n) >= 1e6 ? (n / 1e6).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " млн" : Math.round(n / 1000).toLocaleString("ru-RU") + " тыс.";
 const count = (n) => Math.abs(n) >= 1e6 ? (n / 1e6).toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " млн" : Math.abs(n) >= 1000 ? Math.round(n / 1000).toLocaleString("ru-RU") + " тыс." : Math.round(n).toLocaleString("ru-RU");
 const pct = (r) => (r * 100).toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " %";
@@ -411,7 +418,22 @@ function build() {
   const addStats = (items) => items.forEach((s) => stats.push(s));
 
   if (state.indicator === "reach" && state.level === "channel") {
-    addStats([[people(c.dau), "DAU, среднее"], [people(c.mau), "MAU · " + delta(c.mau, HIST.mau[4] * 1e6) + " к августу"], [pct(c.stickiness), "DAU/MAU"], [people(c.akb), "АКБ канала"]]);
+    const head = channelHeadline();
+    notes.push(["info", "Как читаются 12 карточек", "Цифрово активные — MAU / клиентская база. Транзакционные — АКБ / база. Доход канала — валовый доход жизненного цикла, прибыль — чистая, она равна клиентскому доходу. Доход на активного — валовый / MAU. Продукты — действующие договоры на клиента АКБ. Ключевые функции — доля MAU с переводом по телефону, QR или кэшбэком."]);
+    addStats([
+      [people(c.akb), "Активная клиентская база"],
+      [people(c.mau), "MAU"],
+      [pct(c.stickiness), "DAU/MAU"],
+      [pct(head.digital), "Доля цифрово активных клиентов"],
+      [pct(head.txn), "Доля транзакционных клиентов"],
+      [count(c.ops), "Количество операций"],
+      [money(c.turnover), "Оборот"],
+      [mln1(head.gross), "Доход канала"],
+      [mln1(c.incomeMln), "Прибыль канала"],
+      [rub(head.perActive), "Доход на активного клиента"],
+      [num(c.productsPerAkb, 2), "Среднее количество продуктов на клиента"],
+      [pct(head.key), "Доля клиентов, использующих ключевые функции"]
+    ]);
     charts.push(bars("MAU жизненного цикла", cap, life().map((s) => ({ label: s.short, value: s.mau, text: people(s.mau) }))));
     const rows = life().map((s) => [s.name, people(s.dau), people(s.mau), pct(s.dau / s.mau), people(s.akb), pct(s.mau / c.mau)]);
     rows.push(["Сумма цикла", people(c.dau), people(c.mau), pct(c.stickiness), people(c.akb), "100 %"]);
