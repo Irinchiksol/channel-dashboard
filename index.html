@@ -138,17 +138,82 @@ const STEP_NAMES = ["Показ точки входа", "Переход в ра�
 const SPEED = { phone: 46, qr: 18, own: 24, cashback: 35, partner: 40, "open-deposit": 210, "card-service": 75, "loan-app": 420 };
 const INDICATORS = [["reach", "Охват и активность"], ["usage", "Использование функций"], ["txn", "Транзакции"], ["products", "Продукты"], ["profit", "Доходность"], ["value", "Клиентская ценность"], ["dynamics", "Динамика и изменения"]];
 
-const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "payments", functionId: "phone", productId: "debit", txnCut: "segment" };
+const PERIODS = [["0", "Апр"], ["1", "Май"], ["2", "Июн"], ["3", "Июл"], ["4", "Авг"], ["5", "Сен"]];
+const PERIOD_NAMES = ["Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь"];
+const RELEASES = [
+  { id: "r48", name: "4.8 Платежи", from: 0, weight: 0.14 },
+  { id: "r49", name: "4.9 Выгода", from: 2, weight: 0.22 },
+  { id: "r50", name: "5.0 Переводы", from: 3, weight: 0.31 },
+  { id: "r51", name: "5.1 Накопления", from: 5, weight: 0.33 }
+];
+const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "payments", functionId: "phone", productId: "debit", txnCut: "segment", period: "5", release: "all" };
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
-const life = () => SEGMENTS.filter((s) => !s.slice);
-const byId = (list, id) => list.find((x) => x.id === id);
+const periodIndex = () => Number(state.period);
+const activeReleases = () => RELEASES.filter((r) => r.from <= periodIndex());
+function releaseWeight() {
+  const list = activeReleases();
+  if (state.release === "all" || !list.some((r) => r.id === state.release)) return 1;
+  return list.find((r) => r.id === state.release).weight / sum(list.map((r) => r.weight));
+}
+const entityK = (trend) => trend[periodIndex()] * releaseWeight();
+function viewSegment(s) {
+  const k = entityK(s.trend);
+  if (k === 1) return s;
+  return { ...s, base: s.base * k, mau: s.mau * k, wau: s.wau * k, dau: s.dau * k, akb: s.akb * k, incomeMln: s.incomeMln * k };
+}
+function viewScenario(f) {
+  const k = entityK(f.trend);
+  if (k === 1) return f;
+  return { ...f, dau: f.dau * k, starts: f.starts * k, success: f.success * k, incomeMln: f.incomeMln * k, byLife: f.byLife.map((v) => v * k) };
+}
+function viewSection(s) {
+  const k = entityK(s.trend);
+  if (k === 1) return s;
+  return { ...s, mau: s.mau * k, dau: s.dau * k, financialClients: s.financialClients * k };
+}
+function incomeK() {
+  const rows = SEGMENTS.filter((s) => !s.slice);
+  const base = sum(rows.map((s) => s.incomeMln));
+  return sum(rows.map((s) => s.incomeMln * s.trend[periodIndex()])) * releaseWeight() / base;
+}
+function viewProduct(p) {
+  const k = incomeK();
+  if (k === 1) return p;
+  return { ...p, incomeMln: p.incomeMln * k };
+}
+const RAW_AKB = sum(SEGMENTS.filter((s) => !s.slice).map((s) => s.akb));
+const RAW_BASE = sum(SEGMENTS.filter((s) => !s.slice).map((s) => s.base));
+const life = () => SEGMENTS.filter((s) => !s.slice).map(viewSegment);
+function channelAt(index, release) {
+  const period = state.period;
+  const chosen = state.release;
+  state.period = String(index);
+  if (release !== undefined) state.release = release;
+  const value = channel();
+  state.period = period;
+  state.release = chosen;
+  return value;
+}
+const slices = () => SEGMENTS.filter((s) => s.slice).map(viewSegment);
+const scenarios = () => SCENARIOS.map(viewScenario);
+const sections = () => SECTIONS.map(viewSection);
+const products = () => PRODUCTS.map(viewProduct);
+function byId(list, id) {
+  const found = list.find((x) => x.id === id);
+  if (!found) return found;
+  if (list === SEGMENTS) return viewSegment(found);
+  if (list === SCENARIOS) return viewScenario(found);
+  if (list === SECTIONS) return viewSection(found);
+  if (list === PRODUCTS) return viewProduct(found);
+  return found;
+}
 const scenarioMau = (s) => sum(s.byLife);
-const kids = (id) => SCENARIOS.filter((s) => s.sectionId === id);
+const kids = (id) => SCENARIOS.filter((s) => s.sectionId === id).map(viewScenario);
 const holders = (i) => life().reduce((a, s) => a + s.akb * s.productPen[i], 0);
 const productsPer = (s) => sum(s.productPen);
 const perAkb = (s) => (s.incomeMln * 1e6) / s.akb;
 const sectionIncome = (section) => sum(kids(section.id).map((f) => f.incomeMln));
-const directTotal = () => sum(SCENARIOS.map((s) => s.incomeMln));
+const directTotal = () => sum(scenarios().map((s) => s.incomeMln));
 function channel() {
   const rows = life();
   const mau = sum(rows.map((s) => s.mau));
@@ -199,12 +264,14 @@ function txnCore() {
     oneClients: Math.round(rows.reduce((a, s) => a + s.akb * PORTFOLIO[s.id].one, 0)),
     success: c.ops / attempts, cancel: cancelled / attempts,
     perActive: c.turnover / c.mau, incomePerOp: head.gross * 1e6 / c.ops, commission: fees * 1e6 / c.akb,
-    typeOps, typeTurnover, deviceOps, deviceTurnover, newClients: NEW_CLIENTS
+    typeOps, typeTurnover, deviceOps, deviceTurnover, newClients: Math.round(NEW_CLIENTS * c.akb / RAW_AKB)
   };
 }
 function behaviorOf(t) {
   const regular = t.regularClients;
   const fresh = t.newClients;
+  const sleeping = Math.round(SLEEPING * t.base / RAW_BASE);
+  const highClients = Math.round(HIGH_CLIENTS * t.clients / RAW_AKB);
   const episodic = t.clients - regular - fresh;
   const newOps = Math.round(fresh * 2.4);
   const regularOps = Math.round(regular * 36);
@@ -216,9 +283,9 @@ function behaviorOf(t) {
   const highTurnover = Math.round(t.turnover * 0.62);
   const highIncome = Math.round(t.gross * 0.58 * 10) / 10;
   return {
-    regular, episodic, fresh, sleeping: SLEEPING, never: t.base - t.clients - SLEEPING,
+    regular, episodic, fresh, sleeping, never: t.base - t.clients - sleeping,
     newOps, regularOps, episodicOps, newTurnover, regularTurnover, episodicTurnover,
-    highClients: HIGH_CLIENTS, lowClients: t.clients - HIGH_CLIENTS,
+    highClients, lowClients: t.clients - highClients,
     highOps, lowOps: t.ops - highOps, highTurnover, lowTurnover: t.turnover - highTurnover,
     highIncome, lowIncome: Math.round((t.gross - highIncome) * 10) / 10
   };
@@ -231,8 +298,8 @@ const mlnRub = (n) => { const d = n !== 0 && Math.abs(n) < 10 ? 1 : 0; return n.
 const num = (n, d = 1) => n.toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
 const delta = (c, p) => { const d = (c - p) / Math.abs(p); return (d > 0 ? "+" : "") + (d * 100).toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " %"; };
 const esc = (s) => String(s).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
-function directOfLife(i) { return sum(SCENARIOS.map((f) => f.incomeMln * (f.byLife[i] / scenarioMau(f)))); }
-function directOfSlice(s) { return sum(SCENARIOS.map((f, i) => f.incomeMln * (((s.functionPen?.[i] ?? 0) * s.mau) / scenarioMau(f)))); }
+function directOfLife(i) { return sum(scenarios().map((f) => f.incomeMln * (f.byLife[i] / scenarioMau(f)))); }
+function directOfSlice(s) { return sum(scenarios().map((f, i) => f.incomeMln * (((s.functionPen?.[i] ?? 0) * s.mau) / scenarioMau(f)))); }
 function affinity(segment, fn, index) {
   const channelPen = scenarioMau(fn) / channel().mau;
   const segPen = featurePen(segment, index);
@@ -240,7 +307,7 @@ function affinity(segment, fn, index) {
 }
 function featurePen(segment, index) {
   if (segment.slice) return segment.functionPen[index];
-  return SCENARIOS[index].byLife[LIFE.indexOf(segment.id)] / segment.mau;
+  return viewScenario(SCENARIOS[index]).byLife[LIFE.indexOf(segment.id)] / segment.mau;
 }
 function activeDays(s) { return (s.dau / s.mau) * 30; }
 function opsPerMau(s) { return (s.opsPerAkb * s.akb) / s.mau; }
@@ -251,7 +318,7 @@ function money(n) {
   if (Math.abs(n) >= 1e6) return (n / 1e6).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " млн ₽";
   return rub(n);
 }
-function peersOf(segment) { return SEGMENTS.filter((s) => s.slice === segment.slice); }
+function peersOf(segment) { return SEGMENTS.filter((s) => s.slice === segment.slice).map(viewSegment); }
 const mln1 = (n) => n.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " млн ₽";
 const SOURCE_MIX = [[0.12, 0.28, 0.52, 0.08], [0.62, 0.12, 0.18, 0.08], [0.88, 0.06, 0, 0.06], [0.82, 0.1, 0, 0.08], [0.84, 0.14, 0, 0.02], [0.9, 0.08, 0, 0.02], [0.08, 0.78, 0, 0.14]];
 const SOURCE_NAMES = ["Процентный", "Комиссии", "Карты", "Пакеты"];
@@ -300,9 +367,15 @@ function serveParts(s) {
   return { counts, parts, total };
 }
 function pnlOf(s) {
+  const raw = SEGMENTS.find((x) => x.id === s.id);
+  const k = entityK(raw.trend);
   const row = PNL[s.id];
   const serve = serveParts(s).total;
-  const costs = row.opex + serve + row.comms + row.acq + row.risk;
+  const opex = row.opex * k;
+  const comms = row.comms * k;
+  const acq = row.acq * k;
+  const risk = row.risk * k;
+  const costs = opex + serve + comms + acq + risk;
   const gross = Math.round((s.incomeMln + costs) * 10) / 10;
   const grid = row.shares.map((share, p) => SOURCE_MIX[p].map((mix) => Math.round(gross * share * mix * 10) / 10));
   let flatSum = grid.flat().reduce((a, b) => a + b, 0);
@@ -312,7 +385,7 @@ function pnlOf(s) {
   grid[best.r][best.c] = Math.round((grid[best.r][best.c] + drift) * 10) / 10;
   const sources = [0, 1, 2, 3].map((i) => grid.reduce((a, line) => a + line[i], 0));
   const productSum = (indexes) => indexes.reduce((a, i) => a + grid[i].reduce((x, y) => x + y, 0), 0);
-  return { gross, interest: sources[0], fees: sources[1], cards: sources[2], packages: sources[3], credit: productSum(CREDIT_PRODUCTS), deposits: productSum(DEPOSIT_PRODUCTS), opex: row.opex, serve, comms: row.comms, acq: row.acq, risk: row.risk, costs, net: s.incomeMln, grid, customer: Math.round((gross - serve - row.risk) * 10) / 10 };
+  return { gross, interest: sources[0], fees: sources[1], cards: sources[2], packages: sources[3], credit: productSum(CREDIT_PRODUCTS), deposits: productSum(DEPOSIT_PRODUCTS), opex, serve, comms, acq, risk, costs, net: s.incomeMln, grid, customer: Math.round((gross - serve - risk) * 10) / 10 };
 }
 function audience(weights) {
   const w = sum(weights);
@@ -386,14 +459,14 @@ function funnelOf(fn) {
 }
 function salaryShare(fn) {
   const salary = byId(SEGMENTS, "salary");
-  return salary.functionPen[SCENARIOS.indexOf(fn)] * salary.mau / scenarioMau(fn);
+  return salary.functionPen[SCENARIOS.findIndex((item) => item.id === fn.id)] * salary.mau / scenarioMau(fn);
 }
 function weightedProduct(fn, i) {
   return life().reduce((a, s, k) => a + fn.byLife[k] * s.productPen[i], 0) / scenarioMau(fn);
 }
 function crossUses(fn) {
   const mau = scenarioMau(fn);
-  return SCENARIOS.filter((s) => s.id !== fn.id).sort((a, b) => {
+  return scenarios().filter((s) => s.id !== fn.id).sort((a, b) => {
     const rank = (s) => (s.sectionId === fn.sectionId ? 2 : 0) * 1e9 + scenarioMau(s);
     return rank(b) - rank(a);
   }).slice(0, 2).map((s) => ({ name: s.short, share: Math.min(mau, scenarioMau(s)) / mau * 0.72 }));
@@ -435,7 +508,7 @@ function line(title, caption, categories, series) {
   const legend = `<div class="legend">${series.map((s, i) => `<span><i class="swatch" style="background:${colors[i]}"></i>${esc(s.name)}</span>`).join("")}</div>`;
   return `<section class="block"><h3>${esc(title)}</h3>${legend}<svg class="line" viewBox="0 0 ${w} ${h}">${paths}${labels}</svg><p class="caption">${esc(caption)}</p></section>`;
 }
-const cap = "Иллюстративные данные · сентябрь 2026.";
+let cap = "Иллюстративные данные · сентябрь 2026.";
 const POINT_COLORS = ["#1d4e89", "#5b7c99", "#8a5a12", "#3f6f54", "#6b5b7a", "#8d4b3a", "#3e6b62", "#6e5a3a", "#4d6270"];
 function comboChart(title, caption, categories, gross, profit, perMau) {
   const w = 680, h = 280, left = 48, right = 58, top = 28, bottom = 36;
@@ -509,7 +582,7 @@ function renderTxnActivity() {
     });
     body.push(["Канал", people(t.clients), count(t.ops), money(t.turnover), rub(t.ticket), rub(t.median), num(t.perClient, 1), num(t.days, 1), pct(t.regularClients / t.clients), pct(t.singleClients / t.clients)]);
     tables.push(table("Жизненный цикл", "Сумма клиентов, операций и оборота равна каналу. Медиана канала не складывается из медиан строк. " + cap, headers, body, (ri) => ri === body.length - 1));
-    tables.push(table("Срезы", "Срезы пересекаются с циклом и в сумму канала не входят. " + cap, headers, SEGMENTS.filter((s) => s.slice).map((s) => {
+    tables.push(table("Срезы", "Срезы пересекаются с циклом и в сумму канала не входят. " + cap, headers, slices().map((s) => {
       const extra = TXN_EXTRA[s.id];
       const ops = s.akb * s.opsPerAkb;
       const turnover = s.akb * s.turnoverPerAkb;
@@ -517,13 +590,13 @@ function renderTxnActivity() {
     })));
     charts.push(bars("Операции жизненного цикла", cap, life().map((s) => ({ label: s.short, value: s.akb * s.opsPerAkb, text: count(s.akb * s.opsPerAkb) }))));
   } else if (cut === "function") {
-    notes.push(["info", "Функции не покрывают все операции", "В таблице — успешные завершения сценариев. Их сумма меньше 67,79 млн операций канала: часть операций проходит вне этих восьми сценариев."]);
-    charts.push(bars("Успешные операции сценариев", cap, SCENARIOS.map((f) => ({ label: f.short, value: f.success, text: count(f.success) }))));
-    tables.push(table("Сценарии", cap, ["Сценарий", "Клиенты", "Успехи", "Success rate", "Прямой результат", "На операцию"], SCENARIOS.map((f) => [f.short, people(scenarioMau(f)), count(f.success), pct(f.success / f.starts), mlnRub(f.incomeMln), rub((f.incomeMln * 1e6) / f.success)])));
+    notes.push(["info", "Функции не покрывают все операции", "В таблице — успешные завершения сценариев. Их сумма меньше " + count(t.ops) + " операций канала: часть операций проходит вне этих восьми сценариев."]);
+    charts.push(bars("Успешные операции сценариев", cap, scenarios().map((f) => ({ label: f.short, value: f.success, text: count(f.success) }))));
+    tables.push(table("Сценарии", cap, ["Сценарий", "Клиенты", "Успехи", "Success rate", "Прямой результат", "На операцию"], scenarios().map((f) => [f.short, people(scenarioMau(f)), count(f.success), pct(f.success / f.starts), mlnRub(f.incomeMln), rub((f.incomeMln * 1e6) / f.success)])));
   } else if (cut === "product") {
     notes.push(["info", "Держатель входит в каждый свой продукт", "Оценка операций — держатели × операции на держателя. Клиент с картой и вкладом стоит в обеих строках, поэтому сумма не равна операциям канала."]);
-    charts.push(bars("Операций на держателя", cap, PRODUCTS.map((p) => ({ label: p.name, value: p.opsPerHolder, text: String(p.opsPerHolder) }))));
-    tables.push(table("Продукты", cap, ["Продукт", "Держатели", "На держателя", "Оценка операций", "Доход продукта"], PRODUCTS.map((p, i) => {
+    charts.push(bars("Операций на держателя", cap, products().map((p) => ({ label: p.name, value: p.opsPerHolder, text: String(p.opsPerHolder) }))));
+    tables.push(table("Продукты", cap, ["Продукт", "Держатели", "На держателя", "Оценка операций", "Доход продукта"], products().map((p, i) => {
       const holdersN = holders(i);
       return [p.name, people(holdersN), String(p.opsPerHolder), count(holdersN * p.opsPerHolder), mlnRub(p.incomeMln)];
     })));
@@ -537,11 +610,12 @@ function renderTxnActivity() {
     charts.push(bars(cut === "channel" ? "Операции по каналам" : "Операции по устройствам", cap, names.map((name, i) => ({ label: name, value: ops[i], text: count(ops[i]) }))));
     tables.push(table(cut === "channel" ? "Канал" : "Устройство", "Сумма строк равна операциям и обороту канала. " + cap, ["", "Операции", "Доля", "Сумма", "Средний чек"], names.map((name, i) => [name, count(ops[i]), pct(ops[i] / t.ops), money(turnover[i]), rub(turnover[i] / ops[i])])));
   } else if (cut === "period") {
-    const akb = [...HIST.akb.map((v) => v * 1e6), t.clients];
-    const ops = akb.map((v, i) => i === 5 ? t.ops : Math.round(t.ops * v / t.clients));
-    const turnover = akb.map((v, i) => i === 5 ? t.turnover : Math.round(t.turnover * v / t.clients));
+    const baseline = periodIndex() === 5 && state.release === "all";
+    const akb = baseline ? [...HIST.akb.map((v) => v * 1e6), t.clients] : MONTHS.map((_, i) => channelAt(i).akb);
+    const ops = baseline ? akb.map((v, i) => i === 5 ? t.ops : Math.round(t.ops * v / t.clients)) : MONTHS.map((_, i) => { const row = channelAt(i); return row.ops; });
+    const turnover = baseline ? akb.map((v, i) => i === 5 ? t.turnover : Math.round(t.turnover * v / t.clients)) : MONTHS.map((_, i) => channelAt(i).turnover);
     charts.push(bars("Операции по месяцам", cap, MONTHS.map((name, i) => ({ label: name, value: ops[i], text: count(ops[i]) }))));
-    tables.push(table("Апрель–сентябрь 2026", "Сентябрь совпадает с карточками канала. " + cap, ["Месяц", "Клиенты", "Операции", "Сумма", "Средний чек"], MONTHS.map((name, i) => [name, people(akb[i]), count(ops[i]), money(turnover[i]), rub(turnover[i] / ops[i])]), (ri) => ri === 5));
+    tables.push(table("Апрель–сентябрь 2026", "Выбранный месяц совпадает с карточками. " + cap, ["Месяц", "Клиенты", "Операции", "Сумма", "Средний чек"], MONTHS.map((name, i) => [name, people(akb[i]), count(ops[i]), money(turnover[i]), rub(turnover[i] / ops[i])]), (ri) => ri === periodIndex()));
   } else if (cut === "tenure") {
     const rows = [
       ["Новые", b.fresh, b.newOps, b.newTurnover],
@@ -590,13 +664,15 @@ function renderTxnActivity() {
   return { notes, stats, charts, tables };
 }
 function build() {
+  const releaseName = state.release === "all" ? "все релизы" : (activeReleases().find((r) => r.id === state.release) || { name: "все релизы" }).name;
+  cap = "Иллюстративные данные · " + PERIOD_NAMES[periodIndex()] + " 2026 · " + releaseName + ".";
   const c = channel();
   const segment = byId(SEGMENTS, state.segmentId);
   const section = byId(SECTIONS, state.sectionId);
   const fn = byId(SCENARIOS, state.functionId);
   const onScenario = state.level === "journey" && fn && fn.sectionId === section.id;
   const notes = [];
-  if (state.indicator === "profit") notes.push(["info", "Две сборки дохода", `Клиентский доход сентября — ${mlnRub(c.incomeMln)}. Прямой результат сценариев — ${mlnRub(directTotal())}: комиссия, маржа в окне 30 дней после открытия и кэшбэк со знаком минус.`]);
+  if (state.indicator === "profit") notes.push(["info", "Две сборки дохода", `Клиентский доход ${PERIOD_NAMES[periodIndex()].toLowerCase()} — ${mlnRub(c.incomeMln)}. Прямой результат сценариев — ${mlnRub(directTotal())}: комиссия, маржа в окне 30 дней после открытия и кэшбэк со знаком минус.`]);
   if (state.level === "segment" && segment.slice) notes.push(["warn", "Срез уже входит в жизненный цикл", "Привилегия, Прайм и зарплатники пересекаются с жизненным циклом. Их строки в сумму канала не входят."]);
   const stats = [];
   const charts = [];
@@ -630,7 +706,7 @@ function build() {
     const rows = life().map((s) => [s.name, people(s.dau), people(s.mau), pct(s.dau / s.mau), people(s.akb), pct(s.mau / c.mau)]);
     rows.push(["Сумма цикла", people(c.dau), people(c.mau), pct(c.stickiness), people(c.akb), "100 %"]);
     tables.push(table("Жизненный цикл", "Сумма равна каналу. " + cap, ["Сегмент", "DAU", "MAU", "DAU/MAU", "АКБ", "Доля MAU"], rows));
-    tables.push(table("Срезы поверх цикла", "Доли срезов пересекаются. " + cap, ["Сегмент", "DAU", "MAU", "DAU/MAU", "АКБ", "Доля MAU"], SEGMENTS.filter((s) => s.slice).map((s) => [s.name, people(s.dau), people(s.mau), pct(s.dau / s.mau), people(s.akb), pct(s.mau / c.mau)])));
+    tables.push(table("Срезы поверх цикла", "Доли срезов пересекаются. " + cap, ["Сегмент", "DAU", "MAU", "DAU/MAU", "АКБ", "Доля MAU"], slices().map((s) => [s.name, people(s.dau), people(s.mau), pct(s.dau / s.mau), people(s.akb), pct(s.mau / c.mau)])));
   } else if (state.indicator === "reach" && state.level === "segment") {
     const phonePen = featurePen(segment, 0);
     notes.push(["info", "Как читаются доли сегмента", "База — клиенты сегмента. Активные в приложении — MAU / база. WAU — уникальные за 7 дней. Транзакционные — АКБ / база. Сессии и активные дни — на клиента MAU, дни равны DAU/MAU × 30. Ключевые функции — перевод по телефону, QR или кэшбэк. Регулярные — доля MAU с действием минимум в 4 днях. Отток — доля MAU августа вне сентября."]);
@@ -654,7 +730,7 @@ function build() {
       [pct(segment.m3), "Retention M3"],
       [pct(segment.churn), "Отток MAU"]
     ]);
-    charts.push(bars("Проникновение функций, % MAU", "Клиенты сегмента с функцией / MAU сегмента. У зарплатников перевод по телефону — 65%. Сейчас " + people(phonePen * segment.mau) + ", " + pct(phonePen) + ". " + cap, SCENARIOS.map((f, i) => ({ label: f.short, value: featurePen(segment, i), text: pct(featurePen(segment, i)) }))));
+    charts.push(bars("Проникновение функций, % MAU", "Клиенты сегмента с функцией / MAU сегмента. У зарплатников перевод по телефону — 65%. Сейчас " + people(phonePen * segment.mau) + ", " + pct(phonePen) + ". " + cap, scenarios().map((f, i) => ({ label: f.short, value: featurePen(segment, i), text: pct(featurePen(segment, i)) }))));
     charts.push(bars("Доля активных в приложении", cap, life().map((s) => ({ label: s.short, value: s.mau / s.base, text: pct(s.mau / s.base) }))));
     const peers = peersOf(segment);
     const mark = (rows) => (ri) => rows[ri] && rows[ri].id === segment.id;
@@ -663,7 +739,7 @@ function build() {
     tables.push(table("Удержание и отток", cap, ["Сегмент", "D7", "D30", "M3", "Отток"], peers.map((s) => [s.name, pct(s.d7), pct(s.d30), pct(s.m3), pct(s.churn)]), mark(peers)));
   } else if (state.indicator === "reach" && state.level === "journey" && !onScenario) {
     addStats([[people(section.dau), "DAU раздела"], [people(section.mau), "MAU раздела"], [pct(section.dau / section.mau), "DAU/MAU"], [pct(section.mau / c.mau), "Проникновение в канал"]]);
-    charts.push(bars("Проникновение разделов", cap, SECTIONS.map((s) => ({ label: s.name, value: s.mau / c.mau, text: pct(s.mau / c.mau) }))));
+    charts.push(bars("Проникновение разделов", cap, sections().map((s) => ({ label: s.name, value: s.mau / c.mau, text: pct(s.mau / c.mau) }))));
     notes.push(["info", "Воронка сценария", "Воронка шагов открывается на конкретном сценарии раздела, а не на всём разделе."]);
   } else if (state.indicator === "reach" && onScenario) {
     const book = funnelOf(fn);
@@ -681,15 +757,15 @@ function build() {
   } else if (state.indicator === "usage" && state.level === "channel") {
     const phone = byId(SCENARIOS, "phone");
     addStats([[pct(byId(SECTIONS, "payments").mau / c.mau), "Платежи и переводы"], [pct(scenarioMau(phone) / c.mau), "Перевод по телефону"], [pct(byId(SECTIONS, "benefit").mau / c.mau), "Выгода"], [num(phone.success / scenarioMau(phone), 1), "Операций перевода на MAU"]]);
-    charts.push(bars("Проникновение разделов", cap, SECTIONS.map((s) => ({ label: s.name, value: s.mau / c.mau, text: pct(s.mau / c.mau) }))));
-    tables.push(table("Сценарии канала", cap, ["Сценарий", "Раздел", "MAU", "Успех", "Прямой результат"], SCENARIOS.map((f) => [f.short, byId(SECTIONS, f.sectionId).name, people(scenarioMau(f)), pct(f.success / f.starts), mlnRub(f.incomeMln)])));
+    charts.push(bars("Проникновение разделов", cap, sections().map((s) => ({ label: s.name, value: s.mau / c.mau, text: pct(s.mau / c.mau) }))));
+    tables.push(table("Сценарии канала", cap, ["Сценарий", "Раздел", "MAU", "Успех", "Прямой результат"], scenarios().map((f) => [f.short, byId(SECTIONS, f.sectionId).name, people(scenarioMau(f)), pct(f.success / f.starts), mlnRub(f.incomeMln)])));
   } else if (state.indicator === "usage" && state.level === "segment") {
-    const rows = SCENARIOS.map((f, i) => ({ f, i, ...affinity(segment, f, i) })).sort((a, b) => b.index - a.index);
+    const rows = scenarios().map((f, i) => ({ f, i, ...affinity(segment, f, i) })).sort((a, b) => b.index - a.index);
     const phonePen = featurePen(segment, 0);
     notes.push(["info", "Проникновение функции", "Проникновение функции = клиенты сегмента, использовавшие функцию, / MAU сегмента. Например, 65% MAU зарплатников используют перевод по номеру телефона."]);
     addStats([[pct(segment.keyUse), "MAU с ключевой функцией"], [pct(phonePen), "Проникновение перевода по телефону"], [people(phonePen * segment.mau), "Клиентов сегмента в переводе"], [num(rows[0].index, 2), "Индекс «" + rows[0].f.short + "»"]]);
-    charts.push(bars("Проникновение функций, % MAU", cap, SCENARIOS.map((f, i) => ({ label: f.short, value: featurePen(segment, i), text: pct(featurePen(segment, i)) }))));
-    tables.push(table("Проникновение функций", "Индекс = проникновение сегмента / проникновение канала. " + cap, ["Сценарий", "Клиентов", "Проникновение", "В канале", "Индекс"], SCENARIOS.map((f, i) => { const a = affinity(segment, f, i); return [f.name, people(a.segPen * segment.mau), pct(a.segPen), pct(a.channelPen), num(a.index, 2)]; })));
+    charts.push(bars("Проникновение функций, % MAU", cap, scenarios().map((f, i) => ({ label: f.short, value: featurePen(segment, i), text: pct(featurePen(segment, i)) }))));
+    tables.push(table("Проникновение функций", "Индекс = проникновение сегмента / проникновение канала. " + cap, ["Сценарий", "Клиентов", "Проникновение", "В канале", "Индекс"], scenarios().map((f, i) => { const a = affinity(segment, f, i); return [f.name, people(a.segPen * segment.mau), pct(a.segPen), pct(a.channelPen), num(a.index, 2)]; })));
   } else if (state.indicator === "usage" && state.level === "journey" && !onScenario) {
     const list = kids(section.id);
     addStats([[String(list.length), "Сценариев"], [people(section.mau), "MAU раздела"], [people(section.financialClients), "С финансовой операцией"], [pct(section.mau / c.mau), "Проникновение"]]);
@@ -700,7 +776,7 @@ function build() {
     notes.push(["info", "Использование сценария", "Отправители — клиенты с успешным завершением. У перевода по телефону получателей больше: часть из них не клиенты банка. Частота — успешные операции / клиенты с успехом. Срезы пересекаются с жизненным циклом и в сумму MAU сценария не входят."]);
     addStats([[people(party[0][1]), party[0][0]], [people(party[1][1]), party[1][0]], [num(book.per, 1), "Операций на пользователя"], [pct(fn.success / fn.starts), "Success rate"]]);
     tables.push(table("Активность жизненного цикла", "Доля сегмента — клиенты сценария / MAU сегмента. " + cap, ["Сегмент", "Клиенты", "Доля MAU сегмента", "Доля сценария"], life().map((s, i) => [s.name, people(fn.byLife[i]), pct(fn.byLife[i] / s.mau), pct(fn.byLife[i] / scenarioMau(fn))])));
-    tables.push(table("Срезы в сценарии", cap, ["Срез", "Клиенты", "Доля MAU среза"], SEGMENTS.filter((s) => s.slice).map((s) => { const pen = featurePen(s, SCENARIOS.indexOf(fn)); return [s.name, people(pen * s.mau), pct(pen)]; })));
+    tables.push(table("Срезы в сценарии", cap, ["Срез", "Клиенты", "Доля MAU среза"], slices().map((s) => { const pen = featurePen(s, SCENARIOS.findIndex((item) => item.id === fn.id)); return [s.name, people(pen * s.mau), pct(pen)]; })));
   } else if (state.indicator === "txn" && state.level === "channel") {
     const mix = [0, 0, 0, 0, 0];
     life().forEach((s) => s.txnMix.forEach((share, i) => { mix[i] += s.akb * s.opsPerAkb * share; }));
@@ -735,8 +811,8 @@ function build() {
     tables.push(table("Отказы", "Сумма строк равна стартам без успеха. " + cap, ["Причина", "Операции", "Доля стартов"], [["Отмены", count(book.cancel), pct(book.cancel / fn.starts)], ["Ошибки", count(book.error), pct(book.error / fn.starts)], ["Технические отказы", count(book.tech), pct(book.tech / fn.starts)]]));
   } else if (state.indicator === "products" && state.level === "channel") {
     addStats([[num(c.productsPerAkb, 2), "Продуктов на 1 АКБ"], [pct(holders(0) / c.akb), "Дебетовая карта"], [pct(holders(1) / c.akb), "Кредитная карта"], [mlnRub(c.incomeMln), "Доход продуктов"]]);
-    charts.push(bars("Проникновение продуктов", cap, PRODUCTS.map((p, idx) => ({ label: p.name, value: holders(idx) / c.akb, text: pct(holders(idx) / c.akb) }))));
-    tables.push(table("Продукты канала", "Доход продуктов в сумме равен доходу канала. " + cap, ["Продукт", "Держатели", "Проникновение", "Доход", "На держателя"], PRODUCTS.map((p, idx) => [p.name, people(holders(idx)), pct(holders(idx) / c.akb), mlnRub(p.incomeMln), rub((p.incomeMln * 1e6) / holders(idx))])));
+    charts.push(bars("Проникновение продуктов", cap, products().map((p, idx) => ({ label: p.name, value: holders(idx) / c.akb, text: pct(holders(idx) / c.akb) }))));
+    tables.push(table("Продукты канала", "Доход продуктов в сумме равен доходу канала. " + cap, ["Продукт", "Держатели", "Проникновение", "Доход", "На держателя"], products().map((p, idx) => [p.name, people(holders(idx)), pct(holders(idx) / c.akb), mlnRub(p.incomeMln), rub((p.incomeMln * 1e6) / holders(idx))])));
   } else if (state.indicator === "products" && state.level === "segment") {
     const book = portfolioOf(segment);
     const peers = peersOf(segment);
@@ -754,18 +830,18 @@ function build() {
       [pct(book.profitable), "С доходным продуктом"]
     ]);
     charts.push(bars("Сколько продуктов у клиентов, % АКБ", "Доли складываются в 100%. " + cap, [{ label: "1 продукт", value: book.one, text: pct(book.one) }, { label: "2 продукта", value: book.two, text: pct(book.two) }, { label: "3 и более", value: book.more, text: pct(book.more) }]));
-    charts.push(bars("Проникновение в сегменте", "Один клиент входит в несколько продуктов. " + cap, PRODUCTS.map((p, i) => ({ label: p.name, value: segment.productPen[i], text: pct(segment.productPen[i]) }))));
+    charts.push(bars("Проникновение в сегменте", "Один клиент входит в несколько продуктов. " + cap, products().map((p, i) => ({ label: p.name, value: segment.productPen[i], text: pct(segment.productPen[i]) }))));
     tables.push(table(segment.slice ? "Портфель срезов" : "Портфель жизненного цикла", "Среднее совпадает с суммой проникновений. " + cap, ["Сегмент", "На клиента", "Активных", "Медиана", "1", "2", "3+", "Глубина", "Доходный"], peers.map((s) => { const item = portfolioOf(s); return [s.name, num(item.avg, 2), num(item.active, 2), String(item.median), pct(item.one), pct(item.two), pct(item.more), num(item.depth, 2), pct(item.profitable)]; }), (ri) => peers[ri] && peers[ri].id === segment.id));
-    tables.push(table("Какие продукты есть у сегмента", cap, ["Продукт", "В сегменте", "В канале"], PRODUCTS.map((p, i) => [p.name, pct(segment.productPen[i]), pct(holders(i) / c.akb)])));
+    tables.push(table("Какие продукты есть у сегмента", cap, ["Продукт", "В сегменте", "В канале"], products().map((p, i) => [p.name, pct(segment.productPen[i]), pct(holders(i) / c.akb)])));
   } else if (state.indicator === "products" && state.level === "journey" && !onScenario) {
     const weights = sectionWeights(section.id);
     const pen = (i) => life().reduce((a, s, k) => a + weights[k] * s.productPen[i], 0) / sum(weights);
     addStats([[num(audience(weights).productsPer, 2), "Оценка продуктов на клиента"], [pct(pen(0)), "Оценка доли с дебетовой картой"], [pct(pen(3)), "Оценка доли со счётом"], [pct(pen(2)), "Оценка доли с вкладом"]]);
-    charts.push(bars("Оценка портфеля аудитории раздела", cap, PRODUCTS.map((p, i) => ({ label: p.name, value: pen(i), text: pct(pen(i)) }))));
+    charts.push(bars("Оценка портфеля аудитории раздела", cap, products().map((p, i) => ({ label: p.name, value: pen(i), text: pct(pen(i)) }))));
   } else if (state.indicator === "products" && onScenario) {
     notes.push(["info", "Связь сценария с продуктами", "Доли дебетовой карты, счёта и вклада — проникновение продукта в жизненных сегментах, взвешенное по MAU сценария. Зарплатный продукт — клиенты среза «зарплатники» в этом сценарии / MAU сценария. Срез пересекается с циклом."]);
     addStats([[pct(weightedProduct(fn, 0)), "С дебетовой картой"], [pct(weightedProduct(fn, 3)), "Со счётом"], [pct(salaryShare(fn)), "С зарплатным продуктом"], [pct(weightedProduct(fn, 2)), "С вкладом"]]);
-    charts.push(bars("Продукты клиентов сценария", cap, PRODUCTS.map((p, i) => ({ label: p.name, value: weightedProduct(fn, i), text: pct(weightedProduct(fn, i)) }))));
+    charts.push(bars("Продукты клиентов сценария", cap, products().map((p, i) => ({ label: p.name, value: weightedProduct(fn, i), text: pct(weightedProduct(fn, i)) }))));
   } else if (state.indicator === "profit" && state.level === "channel") {
     addStats([[mlnRub(c.incomeMln), "Клиентский доход"], [mlnRub(directTotal()), "Прямой результат сценариев"], [rub(c.incomePerAkb), "На 1 АКБ"], [mlnRub(sectionIncome(byId(SECTIONS, "benefit"))), "Прямой результат Выгоды", true]]);
     charts.push(bars("Клиентский доход цикла", cap, life().map((s) => ({ label: s.short, value: s.incomeMln, text: mlnRub(s.incomeMln) }))));
@@ -809,18 +885,18 @@ function build() {
     charts.push(pointChart("Распределение сегментов по ценности", "Ось X — клиенты, тыс. Ось Y — прибыль на клиента, ₽. Размер — вклад в прибыль. " + cap, peers.map((s) => ({ name: s.short, x: Math.round(s.base / 1000), y: Math.round(per(s.incomeMln, s.base)), size: s.incomeMln })), "Клиенты, тыс.", "Прибыль на клиента, ₽", "Размер — вклад в прибыль"));
     charts.push(pointChart("Доходность и риск", "Ось X — прибыль на клиента, ₽. Ось Y — кредитные потери на клиента, ₽. " + cap, peers.map((s) => ({ name: s.short, x: Math.round(per(s.incomeMln, s.base)), y: Math.round(per(PNL[s.id].risk, s.base)) })), "Прибыль на клиента, ₽", "Риск на клиента, ₽"));
     tables.push(table("Стоимость обслуживания по драйверам", "Ставка одна на канал: обращение 180 ₽, отделение 450 ₽, звонок 90 ₽, ручная обработка 250 ₽. " + cap, ["Драйвер", "Объём", "Ставка", "Сумма"], DRIVER_NAMES.map((name, i) => [name, count(parts.counts[i]), rub(DRIVER_UNITS[i]), mln1(parts.parts[i])])));
-    const productRows = PRODUCTS.map((prod, i) => [prod.name, ...p.grid[i].map(mln1), mln1(p.grid[i].reduce((a, b) => a + b, 0))]);
+    const productRows = products().map((prod, i) => [prod.name, ...p.grid[i].map(mln1), mln1(p.grid[i].reduce((a, b) => a + b, 0))]);
     productRows.push(["Валовый доход", mln1(p.interest), mln1(p.fees), mln1(p.cards), mln1(p.packages), mln1(p.gross)]);
     tables.push(table("Доход по продуктам и источникам", "Сумма ячеек равна валовому доходу сегмента. " + cap, ["Продукт", ...SOURCE_NAMES, "Всего"], productRows));
     tables.push(table(segment.slice ? "Срезы по ценности" : "Жизненный цикл по ценности", cap, ["Сегмент", "Валовый", "Прибыль", "На клиента", "На MAU", "Риск на клиента"], peers.map((s) => { const item = pnlOf(s); return [s.name, mln1(item.gross), mln1(item.net), rub(per(item.net, s.base)), rub(per(item.gross, s.mau)), rub(per(item.risk, s.base))]; }), (ri) => peers[ri] && peers[ri].id === segment.id));
   } else if (state.indicator === "profit" && state.level === "journey" && !onScenario) {
     const income = sectionIncome(section);
     addStats([[mlnRub(income), "Прямой результат раздела", income < 0], [rub((income * 1e6) / section.mau), "На 1 MAU"], [pct(income / directTotal()), "Доля прямого результата"], [mlnRub(directTotal()), "Все сценарии"]]);
-    tables.push(table("Прямой результат разделов", "Сумма строк равна 374 млн ₽. " + cap, ["Раздел", "Результат", "На 1 MAU"], SECTIONS.map((s) => [s.name, mlnRub(sectionIncome(s)), rub((sectionIncome(s) * 1e6) / s.mau)])));
+    tables.push(table("Прямой результат разделов", "Сумма строк равна " + mlnRub(directTotal()) + ". " + cap, ["Раздел", "Результат", "На 1 MAU"], sections().map((s) => [s.name, mlnRub(sectionIncome(s)), rub((sectionIncome(s) * 1e6) / s.mau)])));
   } else if (state.indicator === "profit" && onScenario) {
     const book = funnelOf(fn);
     const net = fn.incomeMln - book.processing;
-    notes.push(["info", "Доход сценария", "Комиссионный доход — прямой результат сценария: комиссия, маржа в окне 30 дней или кэшбэк со знаком минус. Чистый доход сценария = прямой результат − 1,2 ₽ процессинга на успешную операцию. В сумму 374 млн ₽ входит прямой результат, не чистый."]);
+    notes.push(["info", "Доход сценария", "Комиссионный доход — прямой результат сценария: комиссия, маржа в окне 30 дней или кэшбэк со знаком минус. Чистый доход сценария = прямой результат − 1,2 ₽ процессинга на успешную операцию. В сумму " + mlnRub(directTotal()) + " входит прямой результат, не чистый."]);
     addStats([[mln1(fn.incomeMln), fn.incomeMln < 0 ? "Прямой результат" : "Комиссионный доход", fn.incomeMln < 0], [mln1(book.processing), "Процессинг"], [mln1(net), "Чистый доход сценария", net < 0], [rub((fn.incomeMln * 1e6) / fn.success), "На успешную операцию"]]);
     charts.push(bars(fn.incomeMln < 0 ? "Расход по сегментам" : "Комиссионный доход по сегментам", cap, life().map((s, i) => ({ label: s.short, value: Math.abs(fn.incomeMln) * fn.byLife[i] / scenarioMau(fn), text: mlnRub(fn.incomeMln * fn.byLife[i] / scenarioMau(fn)) }))));
   } else if (state.indicator === "value" && (state.level === "channel" || state.level === "segment")) {
@@ -830,7 +906,7 @@ function build() {
   } else if (state.indicator === "value" && state.level === "journey" && !onScenario) {
     const weights = sectionWeights(section.id);
     const value = audience(weights);
-    const peers = SECTIONS.map((s) => ({ label: s.name, value: audience(sectionWeights(s.id)).incomePer }));
+    const peers = sections().map((s) => ({ label: s.name, value: audience(sectionWeights(s.id)).incomePer }));
     addStats([[rub(value.incomePer), "Оценка дохода на активного"], [num(value.incomePer / c.incomePerAkb, 2), "Индекс к каналу"], [num(value.productsPer, 2), "Оценка продуктов"], [num(value.opsPer, 1), "Оценка операций"]]);
     notes.push(["info", "Ценность аудитории", "Оценка собрана из дохода сегментов, которые составляют аудиторию. Прямой результат сценария остаётся в «Доходности»."]);
     charts.push(bars("Оценка дохода аудитории", cap, peers.map((p) => ({ ...p, text: rub(p.value) }))));
@@ -841,36 +917,48 @@ function build() {
     addStats([[pct(book.steps[7].users / book.steps[6].users), "Повторили за 30 дней"], [pct(audienceD30(fn)), "Retention D30 аудитории"], [delta(scenarioMau(fn), scenarioMau(fn) * fn.trend[4]), "Рост MAU к августу"], [pct(crosses[0].share), "Также «" + crosses[0].name + "»"]]);
     tables.push(table("Переход в другие функции", "Оценка пересечения аудиторий, не измеренное совпадение клиентов. " + cap, ["Функция", "Оценка доли MAU сценария"], crosses.map((item) => [item.name, pct(item.share)])));
   } else if (state.indicator === "dynamics" && state.level === "channel") {
-    const mau = [...HIST.mau, Math.round(c.mau / 1e4) / 100];
-    const akb = [...HIST.akb, Math.round(c.akb / 1e4) / 100];
-    const income = [...HIST.income, c.incomeMln];
-    const dau = [...HIST.dau, Math.round(c.dau / 1e4) / 100];
-    addStats([[delta(mau[5], mau[4]), "MAU к августу"], [delta(akb[5], akb[4]), "АКБ к августу"], [delta(income[5], income[4]), "Доход к августу"], [pct(dau[5] / mau[5]), "DAU/MAU в сентябре"]]);
+    const baseC = channelAt(5, "all");
+    const mau = [...HIST.mau, Math.round(baseC.mau / 1e4) / 100];
+    const akb = [...HIST.akb, Math.round(baseC.akb / 1e4) / 100];
+    const income = [...HIST.income, baseC.incomeMln];
+    const dau = [...HIST.dau, Math.round(baseC.dau / 1e4) / 100];
+    if (periodIndex() === 5 && state.release === "all") {
+      addStats([[delta(mau[5], mau[4]), "MAU к августу"], [delta(akb[5], akb[4]), "АКБ к августу"], [delta(income[5], income[4]), "Доход к августу"], [pct(dau[5] / mau[5]), "DAU/MAU в сентябре"]]);
+    } else {
+      const prev = periodIndex() === 0 ? null : channelAt(periodIndex() - 1);
+      const month = PERIOD_NAMES[periodIndex()].toLowerCase();
+      addStats(prev
+        ? [[people(c.mau), "MAU, " + month], [delta(c.mau, prev.mau), "MAU к " + PERIOD_NAMES[periodIndex() - 1].toLowerCase()], [people(c.akb), "АКБ, " + month], [mlnRub(c.incomeMln), "Клиентский доход"]]
+        : [[people(c.mau), "MAU, " + month], [people(c.akb), "АКБ, " + month], [mlnRub(c.incomeMln), "Клиентский доход"], [pct(c.dau / c.mau), "DAU/MAU"]]);
+    }
     charts.push(line("MAU и АКБ, млн клиентов", "Апрель–сентябрь 2026. " + cap, MONTHS, [{ name: "MAU", data: mau }, { name: "АКБ", data: akb }]));
     charts.push(line("Клиентский доход, млн ₽", "Апрель–сентябрь 2026. " + cap, MONTHS, [{ name: "Доход", data: income }]));
   } else if (state.indicator === "dynamics" && state.level === "segment") {
-    const series = segment.trend.map((t) => segment.mau / 1e6 * t);
+    const rawSeg = SEGMENTS.find((s) => s.id === segment.id);
+    const series = rawSeg.trend.map((t) => rawSeg.mau / 1e6 * t);
     const base = series[0];
     const own = series.map((v) => Math.round(v / base * 1000) / 10);
-    const chMau = [...HIST.mau, c.mau / 1e6];
+    const chMau = [...HIST.mau, channelAt(5, "all").mau / 1e6];
     const chIdx = chMau.map((v) => Math.round(v / chMau[0] * 1000) / 10);
-    const aug = segment.mau * segment.trend[4];
+    const aug = rawSeg.mau * rawSeg.trend[4];
     const left = aug * segment.churn;
     const stayed = aug - left;
-    const arrived = segment.mau - stayed;
+    const arrived = rawSeg.mau - stayed;
     notes.push(["info", "Удержание и отток", "D7, D30 и M3 — доля когорты, активной на 7-й день, на 30-й день и в третьем месяце. Отток — доля MAU августа вне сентября. Пришедшие клиенты могут перекрыть отток, и MAU при этом растёт."]);
     addStats([[pct(segment.d7), "Retention D7"], [pct(segment.d30), "Retention D30"], [pct(segment.m3), "Retention M3"], [pct(segment.churn), "Отток MAU к августу"]]);
     charts.push(bars("Удержание, % когорты", cap, [{ label: "D7", value: segment.d7, text: pct(segment.d7) }, { label: "D30", value: segment.d30, text: pct(segment.d30) }, { label: "M3", value: segment.m3, text: pct(segment.m3) }]));
     charts.push(bars("Отток MAU", cap, life().map((s) => ({ label: s.short, value: s.churn, text: pct(s.churn) }))));
     charts.push(line("Индекс к апрелю, апрель = 100", "Апрель–сентябрь 2026. " + cap, MONTHS, [{ name: segment.short, data: own }, { name: "Канал", data: chIdx }]));
-    tables.push(table("Мост MAU, август → сентябрь", "Сентябрь = остались + пришли. " + cap, ["Шаг", "Клиенты"], [["MAU августа", people(aug)], ["Ушли", people(left)], ["Остались", people(stayed)], ["Пришли", people(arrived)], ["MAU сентября", people(segment.mau)]]));
+    tables.push(table("Мост MAU, август → сентябрь", "Сентябрь = остались + пришли. " + cap, ["Шаг", "Клиенты"], [["MAU августа", people(aug)], ["Ушли", people(left)], ["Остались", people(stayed)], ["Пришли", people(arrived)], ["MAU сентября", people(rawSeg.mau)]]));
   } else if (state.indicator === "dynamics" && state.level === "journey") {
     const book = onScenario ? funnelOf(fn) : null;
-    const series = onScenario ? fn.trend.map((t) => scenarioMau(fn) / 1e6 * t) : section.trend.map((t) => section.mau / 1e6 * t);
+    const rawFn = onScenario ? SCENARIOS.find((s) => s.id === fn.id) : null;
+    const rawSection = SECTIONS.find((s) => s.id === section.id);
+    const series = onScenario ? rawFn.trend.map((t) => sum(rawFn.byLife) / 1e6 * t) : rawSection.trend.map((t) => rawSection.mau / 1e6 * t);
     const name = onScenario ? fn.short : section.name;
     const base = series[0];
     const own = series.map((v) => Math.round(v / base * 1000) / 10);
-    const chMau = [...HIST.mau, c.mau / 1e6];
+    const chMau = [...HIST.mau, channelAt(5, "all").mau / 1e6];
     const chIdx = chMau.map((v) => Math.round(v / chMau[0] * 1000) / 10);
     addStats(onScenario
       ? [[pct(book.steps[7].users / book.steps[6].users), "Повторили за 30 дней"], [delta(series[5], series[4]), "MAU к августу"], [num(own[5], 1), "Индекс к апрелю"], [num(chIdx[5], 1), "Индекс канала к апрелю"]]
@@ -882,20 +970,25 @@ function build() {
   const entity = state.level === "segment"
     ? pills(SEGMENTS.map((s) => [s.id, s.slice ? s.short + " · срез" : s.short]), "segmentId", state.segmentId)
     : state.level === "journey"
-      ? `<p class="label">Раздел</p>${pills(SECTIONS.map((s) => [s.id, s.name]), "sectionId", state.sectionId)}<p class="label">Сценарий</p>${pills([["section", "Весь раздел"], ...kids(state.sectionId).map((s) => [s.id, s.short])], "functionId", onScenario ? fn.id : "section")}`
+      ? `<p class="label">Раздел</p>${pills(sections().map((s) => [s.id, s.name]), "sectionId", state.sectionId)}<p class="label">Сценарий</p>${pills([["section", "Весь раздел"], ...kids(state.sectionId).map((s) => [s.id, s.short])], "functionId", onScenario ? fn.id : "section")}`
       : "";
   const title = state.level === "txnact" ? TXN_CUTS.find((x) => x[0] === state.txnCut)[1] : INDICATORS.find((x) => x[0] === state.indicator)[1];
   const switcher = state.level === "txnact"
     ? `<p class="label">Разрез</p>${pills(TXN_CUTS, "txnCut", state.txnCut)}`
     : `<p class="label">Тип показателя</p>${pills(INDICATORS, "indicator", state.indicator)}`;
+  const releasePills = pills([["all", "Все релизы"], ...activeReleases().map((r) => [r.id, r.name])], "release", activeReleases().some((r) => r.id === state.release) ? state.release : "all");
   document.getElementById("app").innerHTML = `
     <h1>Дэшборд цифрового канала</h1>
-    <p class="lead">Одна витрина. Верхний ряд задаёт уровень анализа, нижний — тип показателя. Сентябрь 2026, цифры иллюстративные и сведены между собой.</p>
+    <p class="lead">Одна витрина. Уровень анализа, тип показателя, период и релиз. Сентябрь и «все релизы» — сверенная база, остальные месяцы и версии масштабируют объёмы. Цифры иллюстративные.</p>
     <p class="label">Уровень анализа</p>
     ${pills(LEVELS, "level", state.level)}
+    <p class="label">Период</p>
+    ${pills(PERIODS, "period", state.period)}
     ${entity}
     ${switcher}
-    <div class="scope"><h2>${esc(title)}</h2><p>${esc(scope)} · сентябрь 2026</p></div>
+    <p class="label">Релиз</p>
+    ${releasePills}
+    <div class="scope"><h2>${esc(title)}</h2><p>${esc(scope)} · ${esc(PERIOD_NAMES[periodIndex()])} 2026 · ${esc(releaseName)}</p></div>
     ${notes.map((n) => `<div class="note${n[0] === "warn" ? " warn" : ""}"><strong>${esc(n[1])}</strong><p>${esc(n[2])}</p></div>`).join("")}
     <div class="kpis">${stats.map((s) => `<div class="kpi${s[2] ? " warn" : ""}"><b>${esc(s[0])}</b><span>${esc(s[1])}</span></div>`).join("")}</div>
     ${charts.join("")}
@@ -906,6 +999,7 @@ document.getElementById("app").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-key]");
   if (!button) return;
   state[button.dataset.key] = button.dataset.value;
+  if (button.dataset.key === "period" && !activeReleases().some((r) => r.id === state.release)) state.release = "all";
   if (button.dataset.key === "sectionId") {
     const list = kids(state.sectionId);
     if (state.functionId !== "section" && !list.some((s) => s.id === state.functionId)) state.functionId = "section";
