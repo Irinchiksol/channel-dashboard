@@ -177,6 +177,25 @@ const SOURCE_MIX = [[0.12, 0.28, 0.52, 0.08], [0.62, 0.12, 0.18, 0.08], [0.88, 0
 const SOURCE_NAMES = ["Процентный", "Комиссии", "Карты", "Пакеты"];
 const CREDIT_PRODUCTS = [1, 4, 5];
 const DEPOSIT_PRODUCTS = [2, 3];
+const PORTFOLIO = {
+  youth: { one: 0.62, two: 0.26, more: 0.12, active: 1.2, used: 0.91, profitable: 0.42 },
+  career: { one: 0.28, two: 0.38, more: 0.34, active: 1.61, used: 0.88, profitable: 0.78 },
+  working: { one: 0.22, two: 0.36, more: 0.42, active: 1.69, used: 0.84, profitable: 0.86 },
+  mature: { one: 0.16, two: 0.34, more: 0.5, active: 1.72, used: 0.8, profitable: 0.92 },
+  senior: { one: 0.28, two: 0.4, more: 0.32, active: 1.27, used: 0.72, profitable: 0.74 },
+  pension: { one: 0.48, two: 0.34, more: 0.18, active: 0.91, used: 0.64, profitable: 0.68 },
+  privilege: { one: 0.04, two: 0.14, more: 0.82, active: 2.66, used: 0.86, profitable: 0.97 },
+  prime: { one: 0.02, two: 0.08, more: 0.9, active: 3.51, used: 0.92, profitable: 0.99 },
+  salary: { one: 0.2, two: 0.38, more: 0.42, active: 1.85, used: 0.87, profitable: 0.84 }
+};
+function portfolioOf(s) {
+  const row = PORTFOLIO[s.id];
+  const avg = productsPer(s);
+  const tail = (avg - row.one - 2 * row.two) / row.more;
+  const median = row.one >= 0.5 ? 1 : row.one + row.two >= 0.5 ? 2 : Math.round(tail);
+  const depth = (2 * row.two + tail * row.more) / (row.two + row.more);
+  return { avg, active: row.active, median, one: row.one, two: row.two, more: row.more, depth, main: s.productPen[0], used: row.used, profitable: row.profitable, tail };
+}
 const DRIVER_NAMES = ["Обращения", "Отделения", "Звонки", "Ручные обработки", "Инфраструктура"];
 const DRIVER_UNITS = [180, 450, 90, 250, 1];
 const PNL = {
@@ -409,8 +428,25 @@ function build() {
     charts.push(bars("Проникновение продуктов", cap, PRODUCTS.map((p, idx) => ({ label: p.name, value: holders(idx) / c.akb, text: pct(holders(idx) / c.akb) }))));
     tables.push(table("Продукты канала", "Доход продуктов в сумме равен доходу канала. " + cap, ["Продукт", "Держатели", "Проникновение", "Доход", "На держателя"], PRODUCTS.map((p, idx) => [p.name, people(holders(idx)), pct(holders(idx) / c.akb), mlnRub(p.incomeMln), rub((p.incomeMln * 1e6) / holders(idx))])));
   } else if (state.indicator === "products" && state.level === "segment") {
-    addStats([[num(productsPer(segment), 2), "Продуктов на 1 АКБ"], [pct(segment.productPen[0]), "Дебетовая карта"], [pct(segment.productPen[1]), "Кредитная карта"], [pct(segment.productPen[2]), "Вклад"]]);
-    charts.push(bars("Проникновение в сегменте", cap, PRODUCTS.map((p, i) => ({ label: p.name, value: segment.productPen[i], text: pct(segment.productPen[i]) }))));
+    const book = portfolioOf(segment);
+    const peers = peersOf(segment);
+    notes.push(["info", "Как читается портфель", "Знаменатель — АКБ сегмента. Продуктов на клиента — среднее число действующих договоров, оно равно сумме проникновений. Медиана и доли с 1, 2 и 3+ продуктами дают то же среднее. Глубина — среднее число продуктов у тех, у кого их два и больше. Основной продукт канала — дебетовая карта. Активное использование — доля АКБ с оборотом по продукту в сентябре. Доходный продукт — кредит, вклад, накопительный счёт или инвестиции."]);
+    addStats([
+      [num(book.avg, 2), "Продуктов на клиента"],
+      [num(book.active, 2), "Активных продуктов, среднее"],
+      [String(book.median), "Медианное число продуктов"],
+      [pct(book.one), "С одним продуктом"],
+      [pct(book.two), "С двумя продуктами"],
+      [pct(book.more), "С тремя и более"],
+      [num(book.depth, 2), "Продуктовая глубина"],
+      [pct(book.main), "С основным продуктом, дебет"],
+      [pct(book.used), "С активным использованием"],
+      [pct(book.profitable), "С доходным продуктом"]
+    ]);
+    charts.push(bars("Сколько продуктов у клиентов, % АКБ", "Доли складываются в 100%. " + cap, [{ label: "1 продукт", value: book.one, text: pct(book.one) }, { label: "2 продукта", value: book.two, text: pct(book.two) }, { label: "3 и более", value: book.more, text: pct(book.more) }]));
+    charts.push(bars("Проникновение в сегменте", "Один клиент входит в несколько продуктов. " + cap, PRODUCTS.map((p, i) => ({ label: p.name, value: segment.productPen[i], text: pct(segment.productPen[i]) }))));
+    tables.push(table(segment.slice ? "Портфель срезов" : "Портфель жизненного цикла", "Среднее совпадает с суммой проникновений. " + cap, ["Сегмент", "На клиента", "Активных", "Медиана", "1", "2", "3+", "Глубина", "Доходный"], peers.map((s) => { const item = portfolioOf(s); return [s.name, num(item.avg, 2), num(item.active, 2), String(item.median), pct(item.one), pct(item.two), pct(item.more), num(item.depth, 2), pct(item.profitable)]; }), (ri) => peers[ri] && peers[ri].id === segment.id));
+    tables.push(table("Какие продукты есть у сегмента", cap, ["Продукт", "В сегменте", "В канале"], PRODUCTS.map((p, i) => [p.name, pct(segment.productPen[i]), pct(holders(i) / c.akb)])));
   } else if (state.indicator === "products") {
     const weights = state.level === "section" ? sectionWeights(section.id) : fn.byLife;
     const w = sum(weights);
