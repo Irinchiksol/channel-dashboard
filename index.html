@@ -502,7 +502,7 @@ function line(title, caption, categories, series) {
   const span = max - min;
   const x = (i) => left + (i * (w - left - right)) / (categories.length - 1);
   const y = (v) => top + (1 - (v - min) / span) * (h - top - bottom);
-  const colors = ["#1d4e89", "#8a93a0"];
+  const colors = ["#1d4e89", "#3f6f54", "#8a5a12", "#6b5b7a", "#8a93a0"];
   const paths = series.map((s, si) => `<polyline fill="none" stroke="${colors[si]}" stroke-width="2" points="${s.data.map((v, i) => `${x(i)},${y(v)}`).join(" ")}" />`).join("");
   const labels = categories.map((c, i) => `<text x="${x(i)}" y="${h - 8}" text-anchor="middle" font-size="11" fill="#5e6772">${c}</text>`).join("");
   const legend = `<div class="legend">${series.map((s, i) => `<span><i class="swatch" style="background:${colors[i]}"></i>${esc(s.name)}</span>`).join("")}</div>`;
@@ -663,6 +663,67 @@ function renderTxnActivity() {
   ]));
   return { notes, stats, charts, tables };
 }
+function withState(period, release, fn) {
+  const prevPeriod = state.period;
+  const prevRelease = state.release;
+  state.period = String(period);
+  state.release = release;
+  try { return fn(); }
+  finally { state.period = prevPeriod; state.release = prevRelease; }
+}
+function focusSnapshot() {
+  if (state.level === "segment") {
+    const s = byId(SEGMENTS, state.segmentId);
+    return { primary: s.mau, secondary: s.akb, money: s.incomeMln, primaryLabel: "MAU", secondaryLabel: "АКБ", moneyLabel: "Доход", primaryFmt: people, secondaryFmt: people, moneyFmt: mlnRub, lineScale: 1e6 };
+  }
+  if (state.level === "journey") {
+    const section = byId(SECTIONS, state.sectionId);
+    const fn = byId(SCENARIOS, state.functionId);
+    if (fn && fn.sectionId === section.id) {
+      return { primary: scenarioMau(fn), secondary: fn.success, money: fn.incomeMln, primaryLabel: "MAU", secondaryLabel: "Успехи", moneyLabel: "Прямой результат", primaryFmt: people, secondaryFmt: count, moneyFmt: mlnRub, lineScale: 1e6 };
+    }
+    return { primary: section.mau, secondary: section.financialClients, money: sectionIncome(section), primaryLabel: "MAU", secondaryLabel: "С операцией", moneyLabel: "Прямой результат", primaryFmt: people, secondaryFmt: people, moneyFmt: mlnRub, lineScale: 1e6 };
+  }
+  if (state.level === "txnact") {
+    const c = channel();
+    return { primary: c.ops, secondary: c.turnover, money: c.incomeMln, primaryLabel: "Операции", secondaryLabel: "Оборот", moneyLabel: "Доход", primaryFmt: count, secondaryFmt: money, moneyFmt: mlnRub, lineScale: 1e6 };
+  }
+  const c = channel();
+  return { primary: c.mau, secondary: c.akb, money: c.incomeMln, primaryLabel: "MAU", secondaryLabel: "АКБ", moneyLabel: "Доход", primaryFmt: people, secondaryFmt: people, moneyFmt: mlnRub, lineScale: 1e6 };
+}
+function releaseShare(rel, month) {
+  if (rel.from > month) return null;
+  const list = RELEASES.filter((item) => item.from <= month);
+  return (rel.weight / sum(list.map((item) => item.weight))) * 100;
+}
+function releaseTrend() {
+  const colors = ["#1d4e89", "#3f6f54", "#8a5a12", "#6b5b7a"];
+  const w = 680, h = 220, left = 44, right = 12, top = 16, bottom = 28;
+  const series = RELEASES.map((rel) => ({ name: rel.name, data: MONTHS.map((_, i) => releaseShare(rel, i)) }));
+  const values = series.flatMap((s) => s.data.filter((v) => v != null));
+  let min = 0, max = Math.max(...values, 1);
+  const span = max - min;
+  const x = (i) => left + (i * (w - left - right)) / (MONTHS.length - 1);
+  const y = (v) => top + (1 - (v - min) / span) * (h - top - bottom);
+  const paths = series.map((s, si) => {
+    const pts = s.data.map((v, i) => (v == null ? null : `${x(i)},${y(v)}`)).filter(Boolean);
+    const circles = s.data.map((v, i) => (v == null ? "" : `<circle cx="${x(i)}" cy="${y(v)}" r="3" fill="${colors[si]}" />`)).join("");
+    const line = pts.length > 1 ? `<polyline fill="none" stroke="${colors[si]}" stroke-width="2" points="${pts.join(" ")}" />` : "";
+    return line + circles;
+  }).join("");
+  const labels = MONTHS.map((name, i) => `<text x="${x(i)}" y="${h - 8}" text-anchor="middle" font-size="11" fill="#5e6772">${name}</text>`).join("");
+  const legend = `<div class="legend">${series.map((s, i) => `<span><i class="swatch" style="background:${colors[i]}"></i>${esc(s.name)}</span>`).join("")}</div>`;
+  return `<section class="block"><h3>Доля версии в месяце, %</h3>${legend}<svg class="line" viewBox="0 0 ${w} ${h}">${paths}${labels}</svg><p class="caption">${esc("Линия начинается с месяца выхода. В каждом месяце доли дают 100%. Когда выходит следующая версия, доля предыдущих уменьшается. " + cap)}</p></section>`;
+}
+function releaseCompare() {
+  const list = activeReleases();
+  const total = sum(list.map((rel) => rel.weight));
+  const rows = list.map((rel) => ({ ...rel, share: rel.weight / total, ...withState(periodIndex(), rel.id, focusSnapshot) }));
+  const sample = rows[0];
+  const chart = bars(sample.primaryLabel + " по релизам", "Все версии, вышедшие к выбранному месяцу, на одном экране. " + cap, rows.map((row) => ({ label: row.name, value: row.primary, text: row.primaryFmt(row.primary) })));
+  const board = table("Изменение по релизам", "Сумма долей равна месяцу. «К предыдущему» — эта версия к предыдущей строке. Фильтр релиза для этого сравнения переключать не нужно. " + cap, ["Релиз", "Доля месяца", sample.primaryLabel, "К предыдущему", sample.secondaryLabel, sample.moneyLabel, sample.moneyLabel + " к предыдущему"], rows.map((row, i) => [row.name, pct(row.share), row.primaryFmt(row.primary), i ? delta(row.primary, rows[i - 1].primary) : "—", row.secondaryFmt(row.secondary), row.moneyFmt(row.money), i ? delta(row.money, rows[i - 1].money) : "—"]), (ri) => rows[ri].id === state.release);
+  return chart + releaseTrend() + board;
+}
 function build() {
   const releaseName = state.release === "all" ? "все релизы" : (activeReleases().find((r) => r.id === state.release) || { name: "все релизы" }).name;
   cap = "Иллюстративные данные · " + PERIOD_NAMES[periodIndex()] + " 2026 · " + releaseName + ".";
@@ -672,7 +733,7 @@ function build() {
   const fn = byId(SCENARIOS, state.functionId);
   const onScenario = state.level === "journey" && fn && fn.sectionId === section.id;
   const notes = [];
-  if (state.indicator === "profit") notes.push(["info", "Две сборки дохода", `Клиентский доход ${PERIOD_NAMES[periodIndex()].toLowerCase()} — ${mlnRub(c.incomeMln)}. Прямой результат сценариев — ${mlnRub(directTotal())}: комиссия, маржа в окне 30 дней после открытия и кэшбэк со знаком минус.`]);
+  if (state.indicator === "profit") notes.push(["info", "Две сборки дохода", `Клиентский доход за ${PERIOD_NAMES[periodIndex()].toLowerCase()} — ${mlnRub(c.incomeMln)}. Прямой результат сценариев — ${mlnRub(directTotal())}: комиссия, маржа в окне 30 дней после открытия и кэшбэк со знаком минус.`]);
   if (state.level === "segment" && segment.slice) notes.push(["warn", "Срез уже входит в жизненный цикл", "Привилегия, Прайм и зарплатники пересекаются с жизненным циклом. Их строки в сумму канала не входят."]);
   const stats = [];
   const charts = [];
@@ -979,7 +1040,7 @@ function build() {
   const releasePills = pills([["all", "Все релизы"], ...activeReleases().map((r) => [r.id, r.name])], "release", activeReleases().some((r) => r.id === state.release) ? state.release : "all");
   document.getElementById("app").innerHTML = `
     <h1>Дэшборд цифрового канала</h1>
-    <p class="lead">Одна витрина. Уровень анализа, тип показателя, период и релиз. Сентябрь и «все релизы» — сверенная база, остальные месяцы и версии масштабируют объёмы. Цифры иллюстративные.</p>
+    <p class="lead">Одна витрина. Уровень анализа, тип показателя и период задают экран. Изменение по релизам видно сразу, без переключения версий. Сентябрь и «все релизы» — сверенная база. Цифры иллюстративные.</p>
     <p class="label">Уровень анализа</p>
     ${pills(LEVELS, "level", state.level)}
     <p class="label">Период</p>
@@ -991,6 +1052,7 @@ function build() {
     <div class="scope"><h2>${esc(title)}</h2><p>${esc(scope)} · ${esc(PERIOD_NAMES[periodIndex()])} 2026 · ${esc(releaseName)}</p></div>
     ${notes.map((n) => `<div class="note${n[0] === "warn" ? " warn" : ""}"><strong>${esc(n[1])}</strong><p>${esc(n[2])}</p></div>`).join("")}
     <div class="kpis">${stats.map((s) => `<div class="kpi${s[2] ? " warn" : ""}"><b>${esc(s[0])}</b><span>${esc(s[1])}</span></div>`).join("")}</div>
+    ${releaseCompare()}
     ${charts.join("")}
     ${tables.join("")}
   `;
