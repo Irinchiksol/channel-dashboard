@@ -32,6 +32,10 @@
   p { margin: 0; }
   .lead { color: var(--muted); max-width: 720px; }
   .label { font-size: 12px; font-weight: 650; margin: 18px 0 8px; }
+  .dates { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 8px; }
+  .dates label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .dates input { font: inherit; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--surface); }
+  .dates .hint { color: var(--faint); font-size: 12px; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; }
   button.pill {
     border: 1px solid var(--line);
@@ -146,8 +150,65 @@ const RELEASES = [
   { id: "r50", name: "5.0 Переводы", from: 3, weight: 0.31 },
   { id: "r51", name: "5.1 Накопления", from: 5, weight: 0.33 }
 ];
-const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "payments", functionId: "phone", productId: "debit", txnCut: "segment", period: "5", release: "all" };
+const state = { level: "channel", indicator: "reach", segmentId: "working", sectionId: "payments", functionId: "phone", productId: "debit", txnCut: "segment", period: "5", release: "all", from: "2026-09-01", to: "2026-09-30" };
 const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+const WINDOW_FROM = new Date(2026, 3, 1);
+const WINDOW_TO = new Date(2026, 8, 30);
+const MONTH_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+function isoDate(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function parseISO(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+  if (!match) return null;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (date.getFullYear() !== Number(match[1]) || date.getMonth() !== Number(match[2]) - 1) return null;
+  return date;
+}
+function monthBounds(index) {
+  return [isoDate(new Date(2026, 3 + index, 1)), isoDate(new Date(2026, 4 + index, 0))];
+}
+function applyMonth(index) {
+  const bounds = monthBounds(index);
+  state.from = bounds[0];
+  state.to = bounds[1];
+  state.period = String(index);
+}
+function normalizeRange() {
+  let from = parseISO(state.from) || new Date(2026, 8, 1);
+  let to = parseISO(state.to) || new Date(2026, 8, 30);
+  if (from > to) { const swap = from; from = to; to = swap; }
+  if (from < WINDOW_FROM) from = WINDOW_FROM;
+  if (to > WINDOW_TO) to = WINDOW_TO;
+  if (from > to) { from = WINDOW_FROM; to = WINDOW_TO; }
+  state.from = isoDate(from);
+  state.to = isoDate(to);
+  state.period = String(to.getMonth() - 3);
+}
+function overlaps() {
+  const from = parseISO(state.from);
+  const to = parseISO(state.to);
+  const rows = [];
+  for (let i = 0; i < 6; i++) {
+    const start = new Date(2026, 3 + i, 1);
+    const end = new Date(2026, 4 + i, 0);
+    const a = from > start ? from : start;
+    const b = to < end ? to : end;
+    if (a <= b) rows.push({ index: i, days: Math.round((b - a) / 86400000) + 1, dim: end.getDate() });
+  }
+  return rows;
+}
+function fullMonthIndex() {
+  const parts = overlaps();
+  if (parts.length === 1 && parts[0].days === parts[0].dim) return parts[0].index;
+  return -1;
+}
+function periodLabel() {
+  if (fullMonthIndex() >= 0) return PERIOD_NAMES[fullMonthIndex()] + " 2026";
+  const from = parseISO(state.from);
+  const to = parseISO(state.to);
+  return from.getDate() + " " + MONTH_GEN[from.getMonth()] + " — " + to.getDate() + " " + MONTH_GEN[to.getMonth()] + " " + to.getFullYear();
+}
 const periodIndex = () => Number(state.period);
 const activeReleases = () => RELEASES.filter((r) => r.from <= periodIndex());
 function releaseWeight() {
@@ -155,26 +216,33 @@ function releaseWeight() {
   if (state.release === "all" || !list.some((r) => r.id === state.release)) return 1;
   return list.find((r) => r.id === state.release).weight / sum(list.map((r) => r.weight));
 }
-const entityK = (trend) => trend[periodIndex()] * releaseWeight();
+function flowScale(trend) {
+  return sum(overlaps().map((part) => trend[part.index] * part.days / part.dim));
+}
+const stockK = (trend) => trend[periodIndex()] * releaseWeight();
+const flowK = (trend) => flowScale(trend) * releaseWeight();
 function viewSegment(s) {
-  const k = entityK(s.trend);
-  if (k === 1) return s;
-  return { ...s, base: s.base * k, mau: s.mau * k, wau: s.wau * k, dau: s.dau * k, akb: s.akb * k, incomeMln: s.incomeMln * k };
+  const ks = stockK(s.trend);
+  const kf = flowK(s.trend);
+  if (ks === 1 && kf === 1) return s;
+  const pace = ks === 0 ? 0 : kf / ks;
+  return { ...s, base: s.base * ks, mau: s.mau * ks, wau: s.wau * ks, dau: s.dau * ks, akb: s.akb * ks, incomeMln: s.incomeMln * kf, opsPerAkb: s.opsPerAkb * pace, turnoverPerAkb: s.turnoverPerAkb * pace };
 }
 function viewScenario(f) {
-  const k = entityK(f.trend);
-  if (k === 1) return f;
-  return { ...f, dau: f.dau * k, starts: f.starts * k, success: f.success * k, incomeMln: f.incomeMln * k, byLife: f.byLife.map((v) => v * k) };
+  const ks = stockK(f.trend);
+  const kf = flowK(f.trend);
+  if (ks === 1 && kf === 1) return f;
+  return { ...f, dau: f.dau * ks, starts: f.starts * kf, success: f.success * kf, incomeMln: f.incomeMln * kf, byLife: f.byLife.map((v) => v * ks) };
 }
 function viewSection(s) {
-  const k = entityK(s.trend);
-  if (k === 1) return s;
-  return { ...s, mau: s.mau * k, dau: s.dau * k, financialClients: s.financialClients * k };
+  const ks = stockK(s.trend);
+  if (ks === 1) return s;
+  return { ...s, mau: s.mau * ks, dau: s.dau * ks, financialClients: s.financialClients * ks };
 }
 function incomeK() {
   const rows = SEGMENTS.filter((s) => !s.slice);
   const base = sum(rows.map((s) => s.incomeMln));
-  return sum(rows.map((s) => s.incomeMln * s.trend[periodIndex()])) * releaseWeight() / base;
+  return sum(rows.map((s) => s.incomeMln * flowScale(s.trend))) * releaseWeight() / base;
 }
 function viewProduct(p) {
   const k = incomeK();
@@ -183,16 +251,14 @@ function viewProduct(p) {
 }
 const RAW_AKB = sum(SEGMENTS.filter((s) => !s.slice).map((s) => s.akb));
 const RAW_BASE = sum(SEGMENTS.filter((s) => !s.slice).map((s) => s.base));
+const RAW_OPS = sum(SEGMENTS.filter((s) => !s.slice).map((s) => s.akb * s.opsPerAkb));
 const life = () => SEGMENTS.filter((s) => !s.slice).map(viewSegment);
 function channelAt(index, release) {
-  const period = state.period;
-  const chosen = state.release;
-  state.period = String(index);
+  const snap = { period: state.period, release: state.release, from: state.from, to: state.to };
+  applyMonth(index);
   if (release !== undefined) state.release = release;
-  const value = channel();
-  state.period = period;
-  state.release = chosen;
-  return value;
+  try { return channel(); }
+  finally { state.period = snap.period; state.release = snap.release; state.from = snap.from; state.to = snap.to; }
 }
 const slices = () => SEGMENTS.filter((s) => s.slice).map(viewSegment);
 const scenarios = () => SCENARIOS.map(viewScenario);
@@ -273,8 +339,9 @@ function behaviorOf(t) {
   const sleeping = Math.round(SLEEPING * t.base / RAW_BASE);
   const highClients = Math.round(HIGH_CLIENTS * t.clients / RAW_AKB);
   const episodic = t.clients - regular - fresh;
-  const newOps = Math.round(fresh * 2.4);
-  const regularOps = Math.round(regular * 36);
+  const intensity = t.clients ? t.ops / (t.clients * (RAW_OPS / RAW_AKB)) : 1;
+  const newOps = Math.round(fresh * 2.4 * intensity);
+  const regularOps = Math.round(regular * 36 * intensity);
   const episodicOps = t.ops - newOps - regularOps;
   const newTurnover = newOps * 1800;
   const regularTurnover = Math.round(regularOps * 4100);
@@ -368,13 +435,14 @@ function serveParts(s) {
 }
 function pnlOf(s) {
   const raw = SEGMENTS.find((x) => x.id === s.id);
-  const k = entityK(raw.trend);
+  const ks = stockK(raw.trend);
+  const kf = flowK(raw.trend);
   const row = PNL[s.id];
-  const serve = serveParts(s).total;
-  const opex = row.opex * k;
-  const comms = row.comms * k;
-  const acq = row.acq * k;
-  const risk = row.risk * k;
+  const serve = serveParts(s).total * (ks === 0 ? 0 : kf / ks);
+  const opex = row.opex * kf;
+  const comms = row.comms * kf;
+  const acq = row.acq * kf;
+  const risk = row.risk * kf;
   const costs = opex + serve + comms + acq + risk;
   const gross = Math.round((s.incomeMln + costs) * 10) / 10;
   const grid = row.shares.map((share, p) => SOURCE_MIX[p].map((mix) => Math.round(gross * share * mix * 10) / 10));
@@ -610,7 +678,7 @@ function renderTxnActivity() {
     charts.push(bars(cut === "channel" ? "Операции по каналам" : "Операции по устройствам", cap, names.map((name, i) => ({ label: name, value: ops[i], text: count(ops[i]) }))));
     tables.push(table(cut === "channel" ? "Канал" : "Устройство", "Сумма строк равна операциям и обороту канала. " + cap, ["", "Операции", "Доля", "Сумма", "Средний чек"], names.map((name, i) => [name, count(ops[i]), pct(ops[i] / t.ops), money(turnover[i]), rub(turnover[i] / ops[i])])));
   } else if (cut === "period") {
-    const baseline = periodIndex() === 5 && state.release === "all";
+    const baseline = fullMonthIndex() === 5 && state.release === "all";
     const akb = baseline ? [...HIST.akb.map((v) => v * 1e6), t.clients] : MONTHS.map((_, i) => channelAt(i).akb);
     const ops = baseline ? akb.map((v, i) => i === 5 ? t.ops : Math.round(t.ops * v / t.clients)) : MONTHS.map((_, i) => { const row = channelAt(i); return row.ops; });
     const turnover = baseline ? akb.map((v, i) => i === 5 ? t.turnover : Math.round(t.turnover * v / t.clients)) : MONTHS.map((_, i) => channelAt(i).turnover);
@@ -726,7 +794,7 @@ function releaseCompare() {
 }
 function build() {
   const releaseName = state.release === "all" ? "все релизы" : (activeReleases().find((r) => r.id === state.release) || { name: "все релизы" }).name;
-  cap = "Иллюстративные данные · " + PERIOD_NAMES[periodIndex()] + " 2026 · " + releaseName + ".";
+  cap = "Иллюстративные данные · " + periodLabel() + " · " + releaseName + ".";
   const c = channel();
   const segment = byId(SEGMENTS, state.segmentId);
   const section = byId(SECTIONS, state.sectionId);
@@ -983,7 +1051,7 @@ function build() {
     const akb = [...HIST.akb, Math.round(baseC.akb / 1e4) / 100];
     const income = [...HIST.income, baseC.incomeMln];
     const dau = [...HIST.dau, Math.round(baseC.dau / 1e4) / 100];
-    if (periodIndex() === 5 && state.release === "all") {
+    if (fullMonthIndex() === 5 && state.release === "all") {
       addStats([[delta(mau[5], mau[4]), "MAU к августу"], [delta(akb[5], akb[4]), "АКБ к августу"], [delta(income[5], income[4]), "Доход к августу"], [pct(dau[5] / mau[5]), "DAU/MAU в сентябре"]]);
     } else {
       const prev = periodIndex() === 0 ? null : channelAt(periodIndex() - 1);
@@ -1044,12 +1112,17 @@ function build() {
     <p class="label">Уровень анализа</p>
     ${pills(LEVELS, "level", state.level)}
     <p class="label">Период</p>
-    ${pills(PERIODS, "period", state.period)}
+    ${pills(PERIODS, "period", String(fullMonthIndex()))}
+    <div class="dates">
+      <label>с <input type="date" data-bound="from" min="2026-04-01" max="2026-09-30" value="${esc(state.from)}"></label>
+      <label>по <input type="date" data-bound="to" min="2026-04-01" max="2026-09-30" value="${esc(state.to)}"></label>
+      <span class="hint">Даты с 1 апреля по 30 сентября 2026. Клиенты — на конец периода, операции и доход — за все дни.</span>
+    </div>
     ${entity}
     ${switcher}
     <p class="label">Релиз</p>
     ${releasePills}
-    <div class="scope"><h2>${esc(title)}</h2><p>${esc(scope)} · ${esc(PERIOD_NAMES[periodIndex()])} 2026 · ${esc(releaseName)}</p></div>
+    <div class="scope"><h2>${esc(title)}</h2><p>${esc(scope)} · ${esc(periodLabel())} · ${esc(releaseName)}</p></div>
     ${notes.map((n) => `<div class="note${n[0] === "warn" ? " warn" : ""}"><strong>${esc(n[1])}</strong><p>${esc(n[2])}</p></div>`).join("")}
     <div class="kpis">${stats.map((s) => `<div class="kpi${s[2] ? " warn" : ""}"><b>${esc(s[0])}</b><span>${esc(s[1])}</span></div>`).join("")}</div>
     ${releaseCompare()}
@@ -1061,7 +1134,10 @@ document.getElementById("app").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-key]");
   if (!button) return;
   state[button.dataset.key] = button.dataset.value;
-  if (button.dataset.key === "period" && !activeReleases().some((r) => r.id === state.release)) state.release = "all";
+  if (button.dataset.key === "period") {
+    applyMonth(Number(state.period));
+    if (!activeReleases().some((r) => r.id === state.release)) state.release = "all";
+  }
   if (button.dataset.key === "sectionId") {
     const list = kids(state.sectionId);
     if (state.functionId !== "section" && !list.some((s) => s.id === state.functionId)) state.functionId = "section";
@@ -1070,6 +1146,14 @@ document.getElementById("app").addEventListener("click", (event) => {
     const chosen = byId(SCENARIOS, state.functionId);
     if (chosen) state.sectionId = chosen.sectionId;
   }
+  build();
+});
+document.getElementById("app").addEventListener("change", (event) => {
+  const input = event.target.closest("input[data-bound]");
+  if (!input) return;
+  state[input.dataset.bound] = input.value;
+  normalizeRange();
+  if (!activeReleases().some((r) => r.id === state.release)) state.release = "all";
   build();
 });
 build();
